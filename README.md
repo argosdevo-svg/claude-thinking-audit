@@ -368,3 +368,37 @@ Our data confirms this is not user perception - it's measurable:
 **Conclusion**: Users paying for Opus ($200/month Max) are receiving Haiku-level cognitive engagement.
 
 ---
+
+## Additional Evidence: Subagent Delegation & UI/API Mismatch
+
+### Massive Haiku Delegation
+
+Our traffic logs reveal that Claude Code silently delegates enormous numbers of calls to Haiku subagents:
+
+| Session Snapshot | Total Subagent Calls | Haiku | Sonnet | Haiku % |
+|------------------|---------------------|-------|--------|---------|
+| Session A | 898 | 896 | 0 | **99.8%** |
+| Session B | 681 | 443 | 0 | **65%** |
+| Session C | 1,376 | 1,374 | 0 | **99.9%** |
+
+**When you request Opus, Claude Code delegates to Haiku behind the scenes.**
+
+### UI vs API Context Mismatch
+
+We observed significant discrepancies between what the Claude Code UI reports and what the API actually shows:
+
+| Metric | Claude Code UI | Actual API | Mismatch |
+|--------|---------------|------------|----------|
+| Context Usage | 21% | 0% | **21% phantom** |
+| Context Usage | 83% | 5% | **78% phantom** |
+| Context Usage | 74% | 0% | **74% phantom** |
+
+The UI shows inflated context usage that doesn't match API reality. This may be used to justify throttling or model switching.
+
+### What This Means
+
+1. **Subagent delegation is MASSIVE** - 99%+ of subagent calls go to Haiku, not Opus/Sonnet
+2. **UI metrics are misleading** - Context percentages don't reflect actual API state
+3. **Users can't verify** - Without MITM analysis, this is invisible
+
+---
