@@ -96,6 +96,7 @@ This tool addresses concerns raised in multiple community reports:
 
 | Issue | Title | Date | Status |
 |-------|-------|------|--------|
+| [#20350](https://github.com/anthropics/claude-code/issues/20350) | **Verified Evidence: Claude Code Delivers 10% of Requested Thinking Budget** | Jan 23, 2026 | **NEW - Our Bug Report** |
 | [#19098](https://github.com/anthropics/claude-code/issues/19098) | Restore explicit ultrathink keyword - Quality degradation since automatic thinking | Jan 18, 2026 | **Closed** |
 | [#19468](https://github.com/anthropics/claude-code/issues/19468) | Systematic Model Degradation and Silent Downgrading | Jan 20, 2026 | Open |
 | [#17900](https://github.com/anthropics/claude-code/issues/17900) | Significant quality degradation since yesterday | Jan 12, 2026 | Open |
@@ -303,6 +304,7 @@ This tool builds on the academic research of:
 | Jan 20, 2026 | [#19468](https://github.com/anthropics/claude-code/issues/19468) - "Systematic Model Degradation" |
 | Jan 23, 2026 | Issue #19098 closed without transparency features |
 | Jan 23, 2026 | **This tool released** - "Anthropic closed our request. So we built it ourselves." |
+| Jan 23, 2026 | [**Bug Report #20350**](https://github.com/anthropics/claude-code/issues/20350) filed with full evidence |
 
 ---
 
