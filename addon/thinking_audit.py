@@ -334,10 +334,17 @@ def response(flow: http.HTTPFlow) -> None:
                     capture.variance_coef = capture.itt_std_ms / capture.itt_mean_ms
         
         # Calculate thinking utilization
-        if capture.thinking_budget_requested > 0:
-            # Estimate thinking tokens from chunks (rough approximation)
-            capture.thinking_tokens_used = capture.thinking_chunk_count * 32  # ~32 tokens per chunk avg
+        # NOTE: We use output_tokens from the API response, not chunk estimation
+        # The chunk count is kept as a secondary metric but not used for utilization calculation
+        if capture.thinking_budget_requested > 0 and capture.output_tokens > 0:
+            # Use actual output_tokens from API (includes thinking tokens when thinking is enabled)
+            # Per Anthropic docs: "You're charged for the full thinking tokens generated"
+            capture.thinking_tokens_used = capture.output_tokens
             capture.thinking_utilization = (capture.thinking_tokens_used / capture.thinking_budget_requested) * 100
+        elif capture.thinking_budget_requested > 0:
+            # Fallback: if no output_tokens available, mark as unknown
+            capture.thinking_tokens_used = 0
+            capture.thinking_utilization = 0.0
         
         # Calculate tokens per second
         if capture.total_time_ms > 0:

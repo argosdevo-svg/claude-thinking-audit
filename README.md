@@ -258,9 +258,17 @@ See `docs/methodology.md` for detailed technical documentation including:
 
 ### Limitations
 
-- Thinking token count is estimated from chunk count
 - Cannot observe server-side processing
 - Requires HTTPS interception (mitmproxy CA certificate)
+
+### Methodology Note (v1.1)
+
+**Update**: Based on community feedback, the token estimation methodology was corrected. The tool now uses `output_tokens` from the API response instead of the flawed `chunk_count * 32` estimation. See [this discussion](https://github.com/anthropics/claude-code/issues/20350) for details.
+
+The following findings **do not rely on token estimation** and remain valid:
+- ITT fingerprinting (timing-based model identification)
+- Haiku subagent delegation (99%+ calls to Haiku)
+- UI vs API context mismatch data
 
 ---
 
