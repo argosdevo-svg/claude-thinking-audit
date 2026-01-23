@@ -1,3 +1,6 @@
+
+<img width="1021" height="283" alt="claude-bullshit1" src="https://github.com/user-attachments/assets/dd19173b-31b2-4e21-ab59-9fdf3ddeceff" />
+
 # Claude Thinking Budget Audit Tool
 
 > **"Anthropic closed our request for transparency. So we built it ourselves."**
@@ -43,7 +46,7 @@ Analysis of **7,000+ API samples** across 4 days reveals consistent throttling:
 | Trainium | 8.0% | 42.67% | 1,686 |
 
 Throttling is **consistent across ALL hardware backends**, indicating this is intentional server-side behavior, not a technical limitation.
-<img width="1021" height="283" alt="claude-bullshit1" src="https://github.com/user-attachments/assets/dd19173b-31b2-4e21-ab59-9fdf3ddeceff" />
+
 
 ---
 
