@@ -21,21 +21,24 @@ Rather than accept opaque "automatic thinking allocation" that users cannot veri
 
 ## Key Findings
 
-Analysis of **7,000+ API samples** across 4 days reveals consistent throttling:
+Analysis of **8,152 API samples** across 5 days (63 sessions) reveals consistent throttling:
 
 | Metric | Requested | Delivered | Delivery Rate |
 |--------|-----------|-----------|---------------|
-| Thinking Budget (standard) | 31,999 tokens | ~3,200 tokens | **10%** |
-| Thinking Budget (interleaved) | 200,000 tokens | ~600 tokens | **0.3%** |
+| **Total Thinking Tokens** | **470 million** | **3.6 million** | **0.77%** |
+| Standard (32k budget) | 31,999 tokens | ~450 tokens | **1.4%** |
+| Interleaved (200k budget) | 200,000 tokens | ~380 tokens | **0.19%** |
+
+> **You request 470 million tokens. You receive 3.6 million. Delivery rate: 0.77%**
 
 ### Expected vs Actual (Claude Opus 4.5)
 
 | Metric | Expected Baseline | Measured | Discrepancy |
 |--------|-------------------|----------|-------------|
-| Thinking Utilization | 42.67% | 10-12% | **~75% reduction** |
+| Thinking Utilization | 42.67% | **8.4%** | **~80% reduction** |
 | Variance Coefficient | 3.01 | 3.07 | Matches (confirms model identity) |
 
-**The timing fingerprint confirms the model IS Opus, but thinking is throttled by ~75%.**
+**The timing fingerprint confirms the model IS Opus, but thinking is throttled by ~80%.**
 
 ### Throttling Across All Backends
 
