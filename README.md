@@ -122,11 +122,11 @@ Based on the methodology from arXiv:2502.20589, we measure timing intervals betw
 Chunk 1 --[ITT]--> Chunk 2 --[ITT]--> Chunk 3 ...
 ```
 
-| Backend | ITT Mean | Variance Coefficient | Tokens/sec |
-|---------|----------|---------------------|------------|
-| TPU | 30-50ms | 2.5-4.5 | ~80 |
-| GPU | 40-60ms | 1.5-3.0 | ~60 |
-| Trainium | 35-55ms | 1.0-2.0 | ~70 |
+| Backend | ITT Range | TPS Range | Variance Range |
+|---------|-----------|-----------|----------------|
+| Trainium | 35-70ms | 8-25 | 0.15-0.35 |
+| TPU | 25-50ms | 12-30 | 0.10-0.25 |
+| GPU | 50-120ms | 5-15 | 0.20-0.50 |
 
 This confirms model identity independent of API claims.
 
@@ -134,16 +134,40 @@ This confirms model identity independent of API claims.
 
 We capture:
 - **Budget Requested**: From `thinking.budget_tokens` in the API request
-- **Tokens Delivered**: Estimated from thinking chunk count in response
+- **Tokens Delivered**: From `output_tokens` in API response (corrected methodology)
 - **Utilization**: `(delivered / requested) × 100`
+- **Thinking Duration**: Separate timing for thinking vs text phases
+- **Per-Phase ITT**: Independent ITT stats for thinking and text chunks
 
 ### 3. Model Routing Verification
 
-Compares `model` in request vs `model` in response to detect silent substitution.
+- Compares `model` in request vs `model` in response to detect silent substitution
+- **UI→API Mismatch Detection**: Compares your Claude Code model selection against actual API requests
+- **Subagent Tracking**: Detects when Claude Code delegates to Haiku/Sonnet subagents
 
 ### 4. Backend Classification
 
-Uses ITT variance patterns to classify which hardware served the request.
+Uses weighted scoring algorithm combining:
+- ITT mean (50% weight)
+- Tokens per second (30% weight)  
+- Variance coefficient (20% weight)
+
+Returns backend type with confidence percentage.
+
+### 5. Speculative Decoding Detection (NEW)
+
+Detects inference optimization patterns per "Wiretapping LLMs" paper:
+- **REST**: High burst ratio + high variance (aggressive speculation)
+- **EAGLE**: Moderate burst + moderate variance
+- **LADE/BiLD**: Lower threshold patterns
+
+### 6. Full Metrics (45+ fields per sample)
+
+- ITT percentiles (p50, p90, p99)
+- Cache efficiency (read/creation tokens)
+- Cloudflare edge location
+- Envoy upstream timing
+- Stop reason
 
 ---
 
@@ -179,6 +203,47 @@ export HTTPS_PROXY=http://localhost:8888
 ```
 
 Or configure in Claude Code settings.
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BLOCK_NON_OPUS` | `0` | Set to `1` to block Haiku/Sonnet requests (returns 403) |
+| `FORCE_THINKING_MODE` | `0` | Set to `1` to force thinking enabled on all requests |
+| `FORCE_THINKING_BUDGET` | - | Force specific budget (e.g., `31999`). Set to `0` to disable thinking. |
+| `FORCE_INTERLEAVED` | `0` | Set to `1` to enable interleaved thinking with 200k budget |
+
+### Usage Examples
+
+```bash
+# Default: Monitoring only (read-only)
+mitmdump -s addon/thinking_audit.py -p 8888
+
+# Block Haiku/Sonnet subagents
+BLOCK_NON_OPUS=1 mitmdump -s addon/thinking_audit.py -p 8888
+
+# Force maximum thinking budget
+FORCE_THINKING_BUDGET=31999 mitmdump -s addon/thinking_audit.py -p 8888
+
+# Force interleaved thinking (200k budget)
+FORCE_INTERLEAVED=1 mitmdump -s addon/thinking_audit.py -p 8888
+
+# Combine: Block non-Opus + Force thinking
+BLOCK_NON_OPUS=1 FORCE_THINKING_MODE=1 FORCE_THINKING_BUDGET=31999 mitmdump -s addon/thinking_audit.py -p 8888
+```
+
+### File Locations
+
+| File | Purpose |
+|------|---------|
+| `addon/thinking_audit.py` | Main mitmproxy addon (587 lines) |
+| `addon/lib/fingerprint_db.py` | Full database engine with stats/trends (2,966 lines) |
+| `addon/lib/statusline.py` | Terminal statusline display (776 lines) |
+| `~/.claude-audit/thinking_audit.db` | SQLite database with captured samples |
 
 ---
 
@@ -249,12 +314,21 @@ See `docs/methodology.md` for detailed technical documentation including:
 
 ## Important Notes
 
-### This Tool is READ-ONLY
+### Default Mode: READ-ONLY
 
-- **Does NOT modify** API requests
-- **Does NOT inject** parameters
-- **Does NOT bypass** any restrictions
-- Simply observes and records traffic you generate
+By default, this tool only **observes and records** traffic:
+- Does NOT modify API requests
+- Does NOT inject parameters
+- Simply captures timing and token data
+
+### Optional: Request Modification
+
+When enabled via environment variables, the tool can:
+- **Block non-Opus models** (`BLOCK_NON_OPUS=1`) - Returns 403 for Haiku/Sonnet
+- **Force thinking budget** (`FORCE_THINKING_BUDGET=N`) - Injects thinking configuration
+- **Enable interleaved mode** (`FORCE_INTERLEAVED=1`) - Adds beta header + 200k budget
+
+These features are **OFF by default** and must be explicitly enabled.
 
 ### Privacy
 
@@ -320,6 +394,7 @@ This tool builds on the academic research of:
 | Jan 23, 2026 | Issue #19098 closed without transparency features |
 | Jan 23, 2026 | **This tool released** - "Anthropic closed our request. So we built it ourselves." |
 | Jan 23, 2026 | [**Bug Report #20350**](https://github.com/anthropics/claude-code/issues/20350) filed with full evidence |
+| Jan 24, 2026 | **v3.3 Released** - Full database engine, speculative decoding detection, optional force modes |
 
 ---
 
