@@ -179,6 +179,28 @@ def get_bimodal_analysis() -> dict:
         return {}
 
 
+def get_quality_status() -> dict:
+    """Get quality/degradation detection status.
+    
+    Returns dict with:
+    - score: 0-100 quality score
+    - mode: premium/standard/degraded
+    - timing_ratio: current ITT vs baseline (< 1 = faster, suspicious)
+    - variance_ratio: current variance vs baseline (> 1 = more variable)
+    - trend: improving/stable/degrading
+    - emoji, color, label for display
+    """
+    if FingerprintDatabase is None:
+        return {}
+    try:
+        db = FingerprintDatabase()
+        return db.get_quality_status()
+    except Exception as e:
+        import sys
+        print(f"[statusline] get_quality_status failed: {e}", file=sys.stderr)
+        return {}
+
+
 def get_cache_analysis() -> dict:
     """Get cache timing analysis."""
     if FingerprintDatabase is None:
@@ -630,13 +652,52 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
 
         lines.append(f"{session_line}  |  {backends_line}  |  {switches_line}")
 
-    # === LINE 7: Subagent info ===
+    # === LINE 7: Subagent info + DELEGATION WARNING ===
     total_subagent = sub_counts.get("total_subagent", 0)
     haiku = sub_counts.get("haiku_subagent", 0)
     sonnet = sub_counts.get("sonnet_subagent", 0)
+    last_subagent_time = sub_counts.get("last_subagent_time", "")
+    
+    # Get user's selected model from context
+    user_selected = context.get("model", {}).get("display_name", "").lower()
+    user_wants_opus = "opus" in user_selected
+    
     if haiku > 0 or sonnet > 0:
-        sub_line = f"Subagent Calls: {total_subagent} total (Haiku:{haiku}, Sonnet:{sonnet})"
+        # Calculate how long ago the last subagent call was
+        minutes_ago = ""
+        if last_subagent_time:
+            try:
+                from datetime import datetime
+                last_dt = datetime.fromisoformat(last_subagent_time.replace("Z", "+00:00"))
+                now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
+                diff = (now - last_dt).total_seconds() / 60
+                if diff < 1:
+                    minutes_ago = "just now"
+                elif diff < 60:
+                    minutes_ago = f"{int(diff)}m ago"
+                else:
+                    minutes_ago = f"{int(diff/60)}h ago"
+            except:
+                minutes_ago = ""
+        
+        time_suffix = f" (last: {minutes_ago})" if minutes_ago else ""
+        sub_line = f"Subagent Calls: {total_subagent} total (Haiku:{haiku}, Sonnet:{sonnet}){time_suffix}"
         lines.append(sub_line)
+        
+        # WARNING: Only show if delegation happened in last 15 minutes
+        recent_counts = sub_counts.get("recent_counts", {})
+        recent_haiku = recent_counts.get("haiku", 0)
+        recent_sonnet = recent_counts.get("sonnet", 0)
+        
+        if user_wants_opus and (recent_haiku > 0 or recent_sonnet > 0):
+            cheaper_used = []
+            if recent_haiku > 0:
+                cheaper_used.append(f"Haiku:{recent_haiku}")
+            if recent_sonnet > 0:
+                cheaper_used.append(f"Sonnet:{recent_sonnet}")
+            cheaper_str = ", ".join(cheaper_used)
+            warning = f"{RED}⚠ RECENT DELEGATION: {cheaper_str} calls in last 15min - you pay Opus, got cheaper models{RESET}"
+            lines.append(warning)
 
     # === ANOMALY LINE (if present) ===
     if anomalies:
@@ -678,6 +739,73 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
 
         if sig in ['COMPLETER', 'SYCOPHANT', 'THEATER']:
             lines.append(f"{YELLOW}⚠ {sig} pattern - increase verification{RESET}")
+
+    # === QUALITY/DEGRADATION LINE ===
+    quality = get_quality_status()
+    if quality.get('score'):
+        score = quality['score']
+        mode = quality.get('label', 'STANDARD')
+        emoji = quality.get('emoji', '🟡')
+        timing_ratio = quality.get('timing_ratio', 1.0)
+        variance_ratio = quality.get('variance_ratio', 1.0)
+        trend = quality.get('trend_label', 'stable')
+        trend_emoji = quality.get('trend_emoji', '→')
+        
+        # Color based on mode
+        mode_colors = {'PREMIUM': GREEN, 'STANDARD': YELLOW, 'DEGRADED': RED}
+        mode_color = mode_colors.get(mode, YELLOW)
+        
+        # Timing ratio explanation
+        if timing_ratio < 0.9:
+            timing_explain = f"{RED}faster than baseline (suspicious){RESET}"
+        elif timing_ratio > 1.1:
+            timing_explain = f"{YELLOW}slower than baseline{RESET}"
+        else:
+            timing_explain = f"{GREEN}normal{RESET}"
+        
+        # Variance ratio explanation
+        if variance_ratio > 1.3:
+            var_explain = f"{RED}more variable (unstable){RESET}"
+        elif variance_ratio < 0.8:
+            var_explain = f"{GREEN}more stable{RESET}"
+        else:
+            var_explain = f"{GREEN}normal{RESET}"
+        
+        # Build quality line with quantization detection
+        quality_line = f"Quality: {emoji}{mode_color}{mode}{RESET} ({score}/100)"
+        
+        # Quantization indicator
+        quant_detected = quality.get('quant_detected', False)
+        quant_type = quality.get('quant_type', 'FP16')
+        quant_conf = quality.get('quant_confidence', 0)
+        
+        if quant_detected:
+            # Quantization detected - show warning
+            quant_color = RED if quant_type in ['INT4', 'INT4-GPTQ'] else YELLOW
+            quality_line += f"  |  {quant_color}⚠ QUANT: {quant_type}{RESET} ({quant_conf}%)"
+        elif quant_type == 'INT8?':
+            # Uncertain
+            quality_line += f"  |  {YELLOW}? {quant_type}{RESET} ({quant_conf}%)"
+        else:
+            # FP16 - no quantization
+            quality_line += f"  |  {GREEN}FP16{RESET} (no quant)"
+        
+        quality_line += f"  |  ITT: {timing_ratio:.1f}x ({timing_explain})"
+        quality_line += f"  |  Var: {variance_ratio:.1f}x ({var_explain})"
+        quality_line += f"  |  {trend_emoji}{trend}"
+        lines.append(quality_line)
+        
+        # Show quantization evidence if detected
+        quant_evidence = quality.get('quant_evidence', [])
+        if quant_detected and quant_evidence:
+            evidence_str = ', '.join(quant_evidence[:3])
+            lines.append(f"{YELLOW}   Quant evidence: {evidence_str}{RESET}")
+        
+        # Explanation if degraded
+        explanations = quality.get('explanation', [])
+        if mode == 'DEGRADED' and explanations:
+            concerns = ", ".join(explanations[:3])
+            lines.append(f"{RED}⚠ Quality concerns: {concerns}{RESET}")
 
     return "\n".join(lines)
 def select_format() -> str:
@@ -730,6 +858,10 @@ def select_format() -> str:
 
 
 def format_statusline(context: dict) -> str:
+    # Optional disable via environment variable
+    if os.environ.get("CLAUDE_STATUSLINE_DISABLED") == "1":
+        return ""
+    
     """Format the statusline based on terminal width or FINGERPRINT_DISPLAY env var."""
     # Extract current model from context for filtering
     current_model = context.get("model", {}).get("display_name", "")

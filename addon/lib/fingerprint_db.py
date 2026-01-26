@@ -367,6 +367,12 @@ def migrate_schema():
         ("samples", "context_cc_pct", "REAL DEFAULT 0"),
         ("samples", "context_mismatch", "INTEGER DEFAULT 0"),
         ("samples", "backend_evidence", "TEXT"),
+        # Quality detection columns (for quantization/degradation detection)
+        ("session_stats", "quality_score", "REAL DEFAULT 50"),
+        ("session_stats", "mode_classification", "TEXT DEFAULT 'standard'"),
+        ("session_stats", "timing_ratio", "REAL DEFAULT 1.0"),
+        ("session_stats", "variance_ratio", "REAL DEFAULT 1.0"),
+        ("session_stats", "quality_trend", "TEXT DEFAULT 'stable'"),
     ]
 
     with get_db() as conn:
@@ -1268,6 +1274,34 @@ class FingerprintDatabase:
             """.format(max_age_minutes)).fetchone()
             if ui_mismatch_row:
                 counts["ui_api_mismatches"] = ui_mismatch_row[0]
+
+            # Get timestamp of last subagent call
+            last_sub_row = conn.execute("""
+                SELECT timestamp FROM samples
+                WHERE is_subagent = 1
+                ORDER BY timestamp DESC LIMIT 1
+            """).fetchone()
+            if last_sub_row:
+                counts["last_subagent_time"] = last_sub_row[0]
+            
+            # Get recent subagent counts (last 15 minutes) for fresh warning
+            recent_rows = conn.execute("""
+                SELECT model_response, COUNT(*) as cnt
+                FROM samples
+                WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime', '-15 minutes')
+                  AND is_subagent = 1
+                GROUP BY model_response
+            """).fetchall()
+            
+            recent_counts = {"haiku": 0, "sonnet": 0}
+            for row in recent_rows:
+                model = (row[0] or "").lower()
+                cnt = row[1]
+                if "haiku" in model:
+                    recent_counts["haiku"] += cnt
+                elif "sonnet" in model:
+                    recent_counts["sonnet"] += cnt
+            counts["recent_counts"] = recent_counts
 
         return counts
 
@@ -2876,6 +2910,287 @@ class FingerprintDatabase:
             'phrase_signals': phrase_metrics,
             'combined_scores': combined_signals
         }
+
+    def calculate_quality_score(self, model: str = None, session_id: str = None) -> dict:
+        """Calculate composite quality score for degradation/quantization detection.
+        
+        Compares current metrics against baseline to detect:
+        - Faster ITT + higher variance = possible quantization
+        - Slower ITT = possible throttling/overload
+        - Behavioral degradation = sloppy responses
+        
+        Returns dict with:
+        - score: 0-100 (100 = premium quality)
+        - mode: 'premium' / 'standard' / 'degraded'
+        - timing_ratio: current ITT / baseline ITT (<1 = faster, suspicious)
+        - variance_ratio: current variance / baseline variance (>1 = more variable)
+        - behavioral_factor: from behavioral fingerprinting
+        - explanation: human-readable interpretation
+        """
+        with get_db() as conn:
+            # Get recent samples (last 30 min)
+            recent = conn.execute("""
+                SELECT 
+                    AVG(itt_mean_ms) as itt_current,
+                    AVG(itt_std_ms) as std_current,
+                    AVG(variance_coef) as var_current,
+                    AVG(tokens_per_sec) as tps_current,
+                    COUNT(*) as sample_count
+                FROM samples
+                WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 minutes')
+                AND itt_mean_ms > 0
+            """).fetchone()
+            
+            # Get baseline (last 24 hours, excluding last 30 min)
+            baseline = conn.execute("""
+                SELECT 
+                    AVG(itt_mean_ms) as itt_baseline,
+                    AVG(itt_std_ms) as std_baseline,
+                    AVG(variance_coef) as var_baseline,
+                    AVG(tokens_per_sec) as tps_baseline,
+                    COUNT(*) as baseline_count
+                FROM samples
+                WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-24 hours')
+                AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 minutes')
+                AND itt_mean_ms > 0
+            """).fetchone()
+            
+            result = {
+                'score': 50,  # Default neutral
+                'mode': 'standard',
+                'timing_ratio': 1.0,
+                'variance_ratio': 1.0,
+                'tps_ratio': 1.0,
+                'behavioral_factor': 1.0,
+                'explanation': [],
+                'sample_count': recent['sample_count'] if recent else 0,
+                'baseline_count': baseline['baseline_count'] if baseline else 0,
+            }
+            
+            # Need minimum samples for meaningful comparison
+            if not recent or recent['sample_count'] < 3:
+                result['explanation'].append('Insufficient recent samples')
+                return result
+            if not baseline or baseline['baseline_count'] < 10:
+                result['explanation'].append('Insufficient baseline samples')
+                return result
+            
+            itt_current = recent['itt_current'] or 0
+            itt_baseline = baseline['itt_baseline'] or 0
+            var_current = recent['var_current'] or 0
+            var_baseline = baseline['var_baseline'] or 0
+            tps_current = recent['tps_current'] or 0
+            tps_baseline = baseline['tps_baseline'] or 0
+            
+            # Calculate ratios
+            timing_ratio = itt_current / itt_baseline if itt_baseline > 0 else 1.0
+            variance_ratio = var_current / var_baseline if var_baseline > 0 else 1.0
+            tps_ratio = tps_current / tps_baseline if tps_baseline > 0 else 1.0
+            
+            result['timing_ratio'] = round(timing_ratio, 2)
+            result['variance_ratio'] = round(variance_ratio, 2)
+            result['tps_ratio'] = round(tps_ratio, 2)
+            
+            # Start with base score of 70
+            score = 70
+            
+            # TIMING ANALYSIS
+            # Faster than baseline is SUSPICIOUS (possible quantization)
+            if timing_ratio < 0.8:
+                score -= 15
+                result['explanation'].append(f'ITT {timing_ratio:.0%} of baseline (faster = suspicious)')
+            elif timing_ratio < 0.9:
+                score -= 5
+                result['explanation'].append(f'ITT slightly faster than baseline')
+            elif timing_ratio > 1.3:
+                score -= 10
+                result['explanation'].append(f'ITT {timing_ratio:.0%} of baseline (slower = throttled?)')
+            elif timing_ratio > 1.1:
+                score -= 3
+                result['explanation'].append(f'ITT slightly slower than baseline')
+            else:
+                score += 10
+                result['explanation'].append(f'ITT within normal range')
+            
+            # VARIANCE ANALYSIS
+            # Higher variance is suspicious (quantization causes more variability)
+            if variance_ratio > 1.5:
+                score -= 15
+                result['explanation'].append(f'Variance {variance_ratio:.1f}x baseline (unstable)')
+            elif variance_ratio > 1.2:
+                score -= 5
+                result['explanation'].append(f'Variance elevated')
+            elif variance_ratio < 0.8:
+                score += 5
+                result['explanation'].append(f'Variance lower than baseline (stable)')
+            else:
+                score += 5
+                result['explanation'].append(f'Variance normal')
+            
+            # TPS ANALYSIS
+            # Much higher TPS + faster ITT = quantization signal
+            if tps_ratio > 1.3 and timing_ratio < 0.9:
+                score -= 10
+                result['explanation'].append(f'High TPS + fast ITT = quantization likely')
+            elif tps_ratio > 1.2:
+                # Fast is good unless combined with variance
+                if variance_ratio > 1.2:
+                    score -= 5
+                    result['explanation'].append(f'High TPS but unstable')
+                else:
+                    score += 5
+                    result['explanation'].append(f'Good throughput')
+            
+            # BEHAVIORAL FACTOR
+            behavior = self.get_combined_signature(session_id)
+            sig = behavior.get('signature', 'UNKNOWN')
+            if sig == 'VERIFIER':
+                result['behavioral_factor'] = 1.1
+                score += 10
+                result['explanation'].append('Behavioral: VERIFIER (good)')
+            elif sig == 'COMPLETER':
+                result['behavioral_factor'] = 0.8
+                score -= 15
+                result['explanation'].append('Behavioral: COMPLETER (quality concern)')
+            elif sig == 'SYCOPHANT':
+                result['behavioral_factor'] = 0.85
+                score -= 10
+                result['explanation'].append('Behavioral: SYCOPHANT (quality concern)')
+            
+            # Clamp score
+            score = max(0, min(100, score))
+            result['score'] = round(score)
+            
+            # Classify mode
+            if score >= 80:
+                result['mode'] = 'premium'
+            elif score >= 50:
+                result['mode'] = 'standard'
+            else:
+                result['mode'] = 'degraded'
+            
+            # === QUANTIZATION DETECTION ===
+            # Based on timing/variance/TPS signatures
+            quant_detected = False
+            quant_type = 'FP16'  # Default: no quantization
+            quant_confidence = 0
+            quant_evidence = []
+            
+            # INT4-GPTQ: Very fast (0.45-0.65x), high variance (1.4-2.0x)
+            if timing_ratio < 0.65 and variance_ratio > 1.4:
+                quant_detected = True
+                quant_type = 'INT4-GPTQ'
+                quant_confidence = min(95, 50 + (1.0 - timing_ratio) * 50 + (variance_ratio - 1.0) * 20)
+                quant_evidence.append(f'ITT {timing_ratio:.0%} (very fast)')
+                quant_evidence.append(f'Variance {variance_ratio:.1f}x (high)')
+                if tps_ratio > 1.4:
+                    quant_confidence += 10
+                    quant_evidence.append(f'TPS {tps_ratio:.1f}x (high)')
+            
+            # INT4: Fast (0.5-0.7x), elevated variance (1.3-1.8x)
+            elif timing_ratio < 0.7 and variance_ratio > 1.3:
+                quant_detected = True
+                quant_type = 'INT4'
+                quant_confidence = min(90, 40 + (0.7 - timing_ratio) * 100 + (variance_ratio - 1.0) * 20)
+                quant_evidence.append(f'ITT {timing_ratio:.0%} (fast)')
+                quant_evidence.append(f'Variance {variance_ratio:.1f}x (elevated)')
+                if tps_ratio > 1.3:
+                    quant_confidence += 10
+                    quant_evidence.append(f'TPS {tps_ratio:.1f}x boost')
+            
+            # INT8: Moderately fast (0.7-0.85x), some variance increase (1.1-1.3x)
+            elif timing_ratio < 0.85 and variance_ratio > 1.1:
+                quant_detected = True
+                quant_type = 'INT8'
+                quant_confidence = min(80, 30 + (0.85 - timing_ratio) * 100 + (variance_ratio - 1.0) * 30)
+                quant_evidence.append(f'ITT {timing_ratio:.0%} (moderately fast)')
+                quant_evidence.append(f'Variance {variance_ratio:.1f}x (slightly elevated)')
+                if tps_ratio > 1.15:
+                    quant_confidence += 10
+                    quant_evidence.append(f'TPS {tps_ratio:.1f}x boost')
+            
+            # Possible INT8: Fast but variance normal (could be better hardware)
+            elif timing_ratio < 0.85 and variance_ratio <= 1.1:
+                quant_type = 'INT8?'  # Uncertain
+                quant_confidence = min(50, 20 + (0.85 - timing_ratio) * 60)
+                quant_evidence.append(f'ITT {timing_ratio:.0%} (fast, but variance normal)')
+                quant_evidence.append('Could be INT8 or better hardware')
+            
+            # FP16 (no quantization): Normal timing and variance
+            else:
+                quant_type = 'FP16'
+                quant_confidence = min(80, 50 + (1.0 - abs(timing_ratio - 1.0)) * 30)
+                if 0.95 <= timing_ratio <= 1.05 and 0.9 <= variance_ratio <= 1.1:
+                    quant_confidence = 90
+                    quant_evidence.append('Timing and variance match baseline')
+            
+            result['quant_detected'] = quant_detected
+            result['quant_type'] = quant_type
+            result['quant_confidence'] = round(quant_confidence)
+            result['quant_evidence'] = quant_evidence
+            
+            return result
+    
+    def get_quality_status(self, session_id: str = None) -> dict:
+        """Get quality status for statusline display.
+        
+        Returns dict formatted for easy statusline consumption:
+        - score, mode, timing_ratio, variance_ratio
+        - trend: comparing last 30min to previous 30min
+        - emoji and color hints
+        """
+        quality = self.calculate_quality_score(session_id=session_id)
+        
+        # Calculate trend (compare current 30min to previous 30min)
+        with get_db() as conn:
+            prev_period = conn.execute("""
+                SELECT AVG(itt_mean_ms) as itt_prev
+                FROM samples
+                WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-60 minutes')
+                AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 minutes')
+                AND itt_mean_ms > 0
+            """).fetchone()
+            
+            current_period = conn.execute("""
+                SELECT AVG(itt_mean_ms) as itt_current
+                FROM samples
+                WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 minutes')
+                AND itt_mean_ms > 0
+            """).fetchone()
+        
+        trend = 'stable'
+        if prev_period and current_period:
+            itt_prev = prev_period['itt_prev'] or 0
+            itt_current = current_period['itt_current'] or 0
+            if itt_prev > 0 and itt_current > 0:
+                change = (itt_current - itt_prev) / itt_prev
+                if change > 0.1:
+                    trend = 'degrading'  # Getting slower
+                elif change < -0.1:
+                    trend = 'improving'  # Getting faster (but check variance)
+                    # If faster but more variable, actually degrading
+                    if quality['variance_ratio'] > 1.2:
+                        trend = 'degrading'
+        
+        quality['trend'] = trend
+        
+        # Add display hints
+        mode_display = {
+            'premium': {'emoji': '🟢', 'color': 'green', 'label': 'PREMIUM'},
+            'standard': {'emoji': '🟡', 'color': 'yellow', 'label': 'STANDARD'},
+            'degraded': {'emoji': '🔴', 'color': 'red', 'label': 'DEGRADED'},
+        }
+        display = mode_display.get(quality['mode'], mode_display['standard'])
+        quality.update(display)
+        
+        trend_display = {
+            'improving': {'trend_emoji': '↗', 'trend_label': 'improving'},
+            'stable': {'trend_emoji': '→', 'trend_label': 'stable'},
+            'degrading': {'trend_emoji': '↘', 'trend_label': 'degrading'},
+        }
+        quality.update(trend_display.get(trend, trend_display['stable']))
+        
+        return quality
 
 
 # CLI interface
