@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""
+Claude ITT Fingerprint Monitor
+Real-time display of Claude API fingerprint data.
+
+Usage:
+    ./claude-monitor           # Watch mode (updates every 2s)
+    ./claude-monitor --once    # Show once and exit
+"""
+
+import sqlite3
+import sys
+import time
+import os
+from pathlib import Path
+
+# ANSI colors
+RESET = "[0m"
+BOLD = "[1m"
+DIM = "[2m"
+RED = "[31m"
+GREEN = "[32m"
+YELLOW = "[33m"
+BLUE = "[34m"
+MAGENTA = "[35m"
+CYAN = "[36m"
+
+DB_PATH = Path(os.path.expanduser("~/.claude/fingerprint.db"))
+
+def get_latest_sample():
+    if not DB_PATH.exists():
+        return None
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM samples ORDER BY timestamp DESC LIMIT 1").fetchone()
+            return dict(row) if row else None
+    except:
+        return None
+
+def get_session_stats():
+    if not DB_PATH.exists():
+        return {}
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+            hour_count = conn.execute("SELECT COUNT(*) FROM samples WHERE timestamp > datetime('now', '-1 hour')").fetchone()[0]
+            avg_itt = conn.execute("SELECT AVG(itt_mean_ms) FROM samples WHERE timestamp > datetime('now', '-1 hour') AND itt_mean_ms > 0").fetchone()[0] or 0
+            backends = conn.execute("SELECT classified_backend, COUNT(*) as cnt FROM samples WHERE timestamp > datetime('now', '-1 hour') GROUP BY classified_backend").fetchall()
+            return {"total": total, "hour_count": hour_count, "avg_itt": avg_itt, "backends": {row[0]: row[1] for row in backends}}
+    except:
+        return {}
+
+def get_baseline():
+    if not DB_PATH.exists():
+        return None
+    try:
+        with sqlite3.connect(str(DB_PATH)) as conn:
+            row = conn.execute("""
+                SELECT AVG(itt_mean_ms) as itt, AVG(variance_coef) as var, AVG(tokens_per_sec) as tps
+                FROM samples WHERE timestamp > datetime('now', '-24 hours') AND timestamp < datetime('now', '-30 minutes') AND itt_mean_ms > 0
+            """).fetchone()
+            if row and row[0]:
+                return {"itt": row[0], "variance": row[1] or 0, "tps": row[2] or 0}
+    except:
+        pass
+    return None
+
+def detect_quantization(timing_ratio, variance_ratio):
+    if timing_ratio < 0.65 and variance_ratio > 1.4:
+        return ("INT4-GPTQ", RED, min(95, int(50 + (1.0 - timing_ratio) * 50)))
+    elif timing_ratio < 0.7 and variance_ratio > 1.3:
+        return ("INT4", RED, min(90, int(40 + (0.7 - timing_ratio) * 100)))
+    elif timing_ratio < 0.85 and variance_ratio > 1.1:
+        return ("INT8", YELLOW, min(80, int(30 + (0.85 - timing_ratio) * 100)))
+    elif timing_ratio < 0.85:
+        return ("INT8?", YELLOW, min(50, int(20 + (0.85 - timing_ratio) * 60)))
+    return ("FP16", GREEN, 80)
+
+def format_status():
+    sample = get_latest_sample()
+    stats = get_session_stats()
+    baseline = get_baseline()
+    
+    lines = []
+    lines.append(f"{BOLD}═══ Claude ITT Fingerprint Monitor ═══{RESET}")
+    lines.append("")
+    
+    if not sample:
+        lines.append(f"{DIM}No fingerprint data yet.{RESET}")
+        lines.append(f"{DIM}Ensure mitmproxy is running with mitm_itt_addon.py{RESET}")
+        return "\n".join(lines)
+    
+    # Model
+    model = sample.get("model_response") or sample.get("model_requested") or "unknown"
+    is_subagent = sample.get("is_subagent", 0)
+    subagent_type = sample.get("subagent_type", "")
+    model_str = f"{model} {YELLOW}(subagent: {subagent_type}){RESET}" if is_subagent else model
+    lines.append(f"{CYAN}Model:{RESET} {model_str}")
+    
+    # Backend
+    backend = sample.get("classified_backend", "unknown")
+    confidence = sample.get("confidence", 0)
+    backend_colors = {"trainium": YELLOW, "tpu": BLUE, "gpu": MAGENTA}
+    bc = backend_colors.get(backend, DIM)
+    lines.append(f"{CYAN}Backend:{RESET} {bc}{backend}{RESET} ({confidence:.0f}%)")
+    
+    # Timing
+    itt = sample.get("itt_mean_ms", 0)
+    itt_std = sample.get("itt_std_ms", 0)
+    tps = sample.get("tokens_per_sec", 0)
+    ttft = sample.get("ttft_ms", 0)
+    lines.append(f"{CYAN}ITT:{RESET} {GREEN}{itt:.0f}ms{RESET} ±{itt_std:.0f}ms  |  {CYAN}TPS:{RESET} {GREEN}{tps:.0f}{RESET}  |  {CYAN}TTFT:{RESET} {ttft/1000:.1f}s")
+    
+    # Percentiles
+    p50, p90, p99 = sample.get("itt_p50_ms", 0), sample.get("itt_p90_ms", 0), sample.get("itt_p99_ms", 0)
+    lines.append(f"{CYAN}Percentiles:{RESET} p50:{p50:.0f}ms  p90:{p90:.0f}ms  p99:{p99:.0f}ms")
+    
+    # Thinking
+    thinking = sample.get("thinking_enabled", 0)
+    budget = sample.get("thinking_budget_requested", 0)
+    util = sample.get("thinking_utilization", 0)
+    if thinking:
+        lines.append(f"{CYAN}Thinking:{RESET} {RED}ON{RESET} (budget:{budget}, used:{util:.0f}%)")
+    
+    # Tokens & Cache
+    inp, out = sample.get("input_tokens", 0), sample.get("output_tokens", 0)
+    cache_eff = sample.get("cache_efficiency", 0)
+    lines.append(f"{CYAN}Tokens:{RESET} {inp}→{out}  |  {CYAN}Cache:{RESET} {cache_eff:.0f}%")
+    
+    lines.append("")
+    
+    # Quality/Quantization
+    if baseline and baseline["itt"] > 0:
+        timing_ratio = itt / baseline["itt"] if itt > 0 else 1.0
+        var_current = sample.get("variance_coef", 0)
+        variance_ratio = var_current / baseline["variance"] if baseline["variance"] > 0 else 1.0
+        
+        quant_type, quant_color, quant_conf = detect_quantization(timing_ratio, variance_ratio)
+        
+        lines.append(f"{BOLD}─── Quality Analysis ───{RESET}")
+        tr_color = RED if timing_ratio < 0.9 else (YELLOW if timing_ratio > 1.1 else GREEN)
+        vr_color = RED if variance_ratio > 1.3 else GREEN
+        lines.append(f"{CYAN}ITT Ratio:{RESET} {tr_color}{timing_ratio:.2f}x{RESET} baseline  |  {CYAN}Variance:{RESET} {vr_color}{variance_ratio:.2f}x{RESET}")
+        lines.append(f"{CYAN}Quantization:{RESET} {quant_color}{quant_type}{RESET} ({quant_conf}%)")
+    else:
+        lines.append(f"{DIM}Need 24h baseline for quality analysis{RESET}")
+    
+    lines.append("")
+    
+    # Session
+    if stats:
+        lines.append(f"{BOLD}─── Session ───{RESET}")
+        lines.append(f"Samples: {stats.get('total', 0)} total, {stats.get('hour_count', 0)} last hour  |  Avg ITT: {stats.get('avg_itt', 0):.0f}ms")
+        backends = stats.get("backends", {})
+        if backends:
+            lines.append(f"Backends: {', '.join([f'{k}:{v}' for k,v in backends.items()])}")
+    
+    lines.append("")
+    lines.append(f"{DIM}Last: {sample.get('timestamp', '')}{RESET}")
+    
+    return "\n".join(lines)
+
+def main():
+    once = "--once" in sys.argv
+    if once:
+        print(format_status())
+    else:
+        try:
+            while True:
+                print("\033[2J\033[H", end="")  # clear
+                print(format_status())
+                print(f"\n{DIM}Ctrl+C to exit. Refresh: 2s{RESET}")
+                time.sleep(2)
+        except KeyboardInterrupt:
+            print(f"\n{DIM}Exiting...{RESET}")
+
+if __name__ == "__main__":
+    main()
