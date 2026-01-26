@@ -341,7 +341,19 @@ Combined with behavioral fingerprinting (VERIFIER vs COMPLETER patterns).
 
 On **January 18, 2026**, we filed [GitHub Issue #19098](https://github.com/anthropics/claude-code/issues/19098) requesting that Anthropic restore explicit `ultrathink` controls after observing systematic quality degradation.
 
-**The issue was closed without implementing the requested transparency features.**
+**The issue was marked as COMPLETED by Anthropic employee @bogini on January 21, 2026 — without any comment, explanation, or implementing the requested features.**
+
+This follows a pattern of issue suppression documented in the original feature request:
+
+| Issue | Title | Closure Reason |
+|-------|-------|----------------|
+| [#7769](https://github.com/anthropics/claude-code/issues/7769) | Severe Performance Degradation | **Closed** |
+| [#8043](https://github.com/anthropics/claude-code/issues/8043) | Persistent Instruction Disregard | **Closed "not planned"** |
+| [#6125](https://github.com/anthropics/claude-code/issues/6125) | AI Ignores Stop Instructions | **Closed "model limitation"** |
+| [#15443](https://github.com/anthropics/claude-code/issues/15443) | Claude ignores CLAUDE.md instructions | **Closed "duplicate"** |
+| [#19098](https://github.com/anthropics/claude-code/issues/19098) | Restore ultrathink keyword | **Closed "completed"** (nothing implemented) |
+
+Marking a feature request as "completed" without implementing it is gaslighting. Users explicitly argued in #19098 that it was NOT a duplicate — this was ignored.
 
 Rather than accept opaque "automatic thinking allocation" that users cannot verify, we built this tool.
 
@@ -354,7 +366,7 @@ Rather than accept opaque "automatic thinking allocation" that users cannot veri
 | Jan 12, 2026 | [#17900](https://github.com/anthropics/claude-code/issues/17900) - "Significant quality degradation" |
 | Jan 18, 2026 | [#19098](https://github.com/anthropics/claude-code/issues/19098) - Feature request for ultrathink restoration |
 | Jan 20, 2026 | [#19468](https://github.com/anthropics/claude-code/issues/19468) - "Systematic Model Degradation" |
-| Jan 23, 2026 | Issue #19098 closed without transparency features |
+| Jan 21, 2026 | Issue #19098 marked **COMPLETED** by @bogini (nothing implemented) |
 | Jan 23, 2026 | **This tool released** |
 | Jan 24, 2026 | [**Bug Report #20350**](https://github.com/anthropics/claude-code/issues/20350) filed with evidence |
 | Jan 26, 2026 | **v3.4 Released** - Quantization detection, terminal monitor, optional statusline |
@@ -364,7 +376,7 @@ Rather than accept opaque "automatic thinking allocation" that users cannot veri
 | Issue | Title | Status |
 |-------|-------|--------|
 | [#20350](https://github.com/anthropics/claude-code/issues/20350) | Verified Evidence: Claude Code Delivers 10% of Requested Thinking Budget | **Our Report** |
-| [#19098](https://github.com/anthropics/claude-code/issues/19098) | Restore explicit ultrathink keyword | **Closed** |
+| [#19098](https://github.com/anthropics/claude-code/issues/19098) | Restore explicit ultrathink keyword | **Closed "completed"** by @bogini |
 | [#19468](https://github.com/anthropics/claude-code/issues/19468) | Systematic Model Degradation and Silent Downgrading | Open |
 | [#17900](https://github.com/anthropics/claude-code/issues/17900) | Significant quality degradation since yesterday | Open |
 | [#14261](https://github.com/anthropics/claude-code/issues/14261) | $200/Month "Max" Subscription Provides ~12 Usable Days | Open |
