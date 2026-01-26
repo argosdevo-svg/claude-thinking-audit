@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Claude ITT Fingerprint Monitor
-Real-time display of Claude API fingerprint data.
+Claude ITT Fingerprint Monitor - FULL VERBOSE VERSION
+Dedicated terminal display with full explanations.
 
 Usage:
     ./claude-monitor           # Watch mode (updates every 2s)
@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import time
 import os
+import statistics
 from pathlib import Path
 
 # ANSI colors
@@ -24,140 +25,535 @@ YELLOW = "[33m"
 BLUE = "[34m"
 MAGENTA = "[35m"
 CYAN = "[36m"
+WHITE = "[37m"
 
 DB_PATH = Path(os.path.expanduser("~/.claude/fingerprint.db"))
 
-def get_latest_sample():
+def get_db():
     if not DB_PATH.exists():
         return None
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def get_latest_sample():
+    conn = get_db()
+    if not conn: return None
     try:
-        with sqlite3.connect(str(DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM samples ORDER BY timestamp DESC LIMIT 1").fetchone()
-            return dict(row) if row else None
-    except:
-        return None
+        row = conn.execute("SELECT * FROM samples ORDER BY timestamp DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 def get_session_stats():
-    if not DB_PATH.exists():
-        return {}
+    conn = get_db()
+    if not conn: return {}
     try:
-        with sqlite3.connect(str(DB_PATH)) as conn:
-            total = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-            hour_count = conn.execute("SELECT COUNT(*) FROM samples WHERE timestamp > datetime('now', '-1 hour')").fetchone()[0]
-            avg_itt = conn.execute("SELECT AVG(itt_mean_ms) FROM samples WHERE timestamp > datetime('now', '-1 hour') AND itt_mean_ms > 0").fetchone()[0] or 0
-            backends = conn.execute("SELECT classified_backend, COUNT(*) as cnt FROM samples WHERE timestamp > datetime('now', '-1 hour') GROUP BY classified_backend").fetchall()
-            return {"total": total, "hour_count": hour_count, "avg_itt": avg_itt, "backends": {row[0]: row[1] for row in backends}}
-    except:
-        return {}
+        total = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+        hour_count = conn.execute("SELECT COUNT(*) FROM samples WHERE timestamp > datetime('now', '-1 hour')").fetchone()[0]
+        avg_itt = conn.execute("SELECT AVG(itt_mean_ms) FROM samples WHERE timestamp > datetime('now', '-1 hour') AND itt_mean_ms > 0").fetchone()[0] or 0
+        avg_cache = conn.execute("SELECT AVG(cache_efficiency) FROM samples WHERE timestamp > datetime('now', '-1 hour')").fetchone()[0] or 0
+        avg_thinking = conn.execute("SELECT AVG(thinking_utilization) FROM samples WHERE timestamp > datetime('now', '-1 hour') AND thinking_enabled = 1").fetchone()[0] or 0
+        backends = conn.execute("SELECT classified_backend, COUNT(*) as cnt FROM samples GROUP BY classified_backend").fetchall()
+        hour_backends = conn.execute("SELECT classified_backend, COUNT(*) as cnt FROM samples WHERE timestamp > datetime('now', '-1 hour') GROUP BY classified_backend").fetchall()
+        
+        # Backend switches
+        recent = conn.execute("SELECT classified_backend FROM samples ORDER BY timestamp DESC LIMIT 100").fetchall()
+        switches = 0
+        switch_list = []
+        prev = None
+        for row in recent:
+            if prev and row[0] != prev:
+                switches += 1
+                if row[0] not in switch_list:
+                    switch_list.append(row[0])
+            prev = row[0]
+        
+        # Subagent counts
+        haiku = conn.execute("SELECT COUNT(*) FROM samples WHERE subagent_type = 'haiku'").fetchone()[0]
+        sonnet = conn.execute("SELECT COUNT(*) FROM samples WHERE subagent_type = 'sonnet'").fetchone()[0]
+        direct = conn.execute("SELECT COUNT(*) FROM samples WHERE is_subagent = 0").fetchone()[0]
+        
+        # Context data
+        context = conn.execute("SELECT context_api_pct, context_cc_pct, context_mismatch FROM samples ORDER BY timestamp DESC LIMIT 1").fetchone()
+        
+        return {
+            "total": total,
+            "hour_count": hour_count,
+            "avg_itt": avg_itt,
+            "avg_cache": avg_cache,
+            "avg_thinking": avg_thinking,
+            "backends": {row[0]: row[1] for row in backends},
+            "hour_backends": {row[0]: row[1] for row in hour_backends},
+            "switches": switches,
+            "switch_list": switch_list,
+            "haiku_count": haiku,
+            "sonnet_count": sonnet,
+            "direct_count": direct,
+            "context_api": context[0] if context else 0,
+            "context_ui": context[1] if context else 0,
+            "context_mismatch": context[2] if context else 0,
+        }
+    finally:
+        conn.close()
 
 def get_baseline():
-    if not DB_PATH.exists():
-        return None
+    conn = get_db()
+    if not conn: return None
     try:
-        with sqlite3.connect(str(DB_PATH)) as conn:
-            row = conn.execute("""
-                SELECT AVG(itt_mean_ms) as itt, AVG(variance_coef) as var, AVG(tokens_per_sec) as tps
-                FROM samples WHERE timestamp > datetime('now', '-24 hours') AND timestamp < datetime('now', '-30 minutes') AND itt_mean_ms > 0
-            """).fetchone()
-            if row and row[0]:
-                return {"itt": row[0], "variance": row[1] or 0, "tps": row[2] or 0}
-    except:
-        pass
+        row = conn.execute("""
+            SELECT AVG(itt_mean_ms) as itt, AVG(variance_coef) as var, AVG(tokens_per_sec) as tps,
+                   COUNT(*) as count
+            FROM samples WHERE timestamp > datetime('now', '-24 hours') 
+            AND timestamp < datetime('now', '-30 minutes') AND itt_mean_ms > 0
+        """).fetchone()
+        if row and row[0]:
+            return {"itt": row[0], "variance": row[1] or 0, "tps": row[2] or 0, "count": row[3]}
+    finally:
+        conn.close()
     return None
 
-def detect_quantization(timing_ratio, variance_ratio):
+def get_behavioral_signature():
+    conn = get_db()
+    if not conn: return {}
+    try:
+        rows = conn.execute("""
+            SELECT verification_ratio, preparation_ratio, unverified_claims
+            FROM behavioral_samples ORDER BY timestamp DESC LIMIT 10
+        """).fetchall()
+        
+        if not rows:
+            return {"signature": "UNKNOWN", "confidence": 0, "verification_ratio": 0, "samples": 0}
+        
+        ver_ratios = [r[0] for r in rows if r[0] is not None]
+        avg_ver = sum(ver_ratios) / len(ver_ratios) if ver_ratios else 0.5
+        unverified = sum(r[2] for r in rows if r[2]) 
+        
+        if avg_ver > 0.7:
+            sig, conf = "VERIFIER", min(95, avg_ver * 100)
+        elif avg_ver < 0.3:
+            sig, conf = "COMPLETER", min(95, (1 - avg_ver) * 100)
+        elif avg_ver < 0.5:
+            sig, conf = "SYCOPHANT", 60
+        else:
+            sig, conf = "NEUTRAL", 50
+        
+        return {"signature": sig, "confidence": conf, "verification_ratio": avg_ver, 
+                "samples": len(rows), "unverified_claims": unverified}
+    except:
+        return {"signature": "UNKNOWN", "confidence": 0, "verification_ratio": 0, "samples": 0}
+    finally:
+        conn.close()
+
+def detect_quantization(timing_ratio, variance_ratio, tps_ratio):
+    evidence = []
     if timing_ratio < 0.65 and variance_ratio > 1.4:
-        return ("INT4-GPTQ", RED, min(95, int(50 + (1.0 - timing_ratio) * 50)))
+        t, c = "INT4-GPTQ", min(95, int(50 + (1.0 - timing_ratio) * 50 + (variance_ratio - 1.0) * 20))
+        evidence = ["Very fast inference", "High variance", "Aggressive 4-bit quantization"]
     elif timing_ratio < 0.7 and variance_ratio > 1.3:
-        return ("INT4", RED, min(90, int(40 + (0.7 - timing_ratio) * 100)))
+        t, c = "INT4", min(90, int(40 + (0.7 - timing_ratio) * 100))
+        evidence = ["Fast inference", "Elevated variance", "4-bit quantization likely"]
     elif timing_ratio < 0.85 and variance_ratio > 1.1:
-        return ("INT8", YELLOW, min(80, int(30 + (0.85 - timing_ratio) * 100)))
+        t, c = "INT8", min(80, int(30 + (0.85 - timing_ratio) * 100))
+        evidence = ["Moderately fast", "Slightly elevated variance", "8-bit quantization possible"]
     elif timing_ratio < 0.85:
-        return ("INT8?", YELLOW, min(50, int(20 + (0.85 - timing_ratio) * 60)))
-    return ("FP16", GREEN, 80)
+        t, c = "INT8?", min(50, int(20 + (0.85 - timing_ratio) * 60))
+        evidence = ["Fast but stable", "Could be INT8 or better hardware"]
+    else:
+        t, c = "FP16", 80
+        evidence = ["Normal timing", "Normal variance", "Full precision likely"]
+    return t, c, evidence
+
+def get_thinking_tier(budget):
+    if budget >= 20000:
+        return "Maximum", RED, "🔴", "Highest thinking allocation (31k tokens)"
+    elif budget >= 8000:
+        return "Enhanced", YELLOW, "🟠", "Above-average thinking (8k-20k tokens)"
+    elif budget >= 1024:
+        return "Basic", YELLOW, "🟡", "Minimal thinking (1k-8k tokens)"
+    return "None", DIM, "", "Thinking disabled"
+
+def analyze_latency_pattern(p50, p90, p99, variance):
+    """Determine hardware signature from latency distribution."""
+    if p99 > p90 * 3:
+        return "Trainium", "spike at tail = Trainium hardware (burst processing)"
+    elif variance < 0.3 and p90 < p50 * 2:
+        return "TPU", "tight distribution = TPU hardware (consistent)"
+    elif variance > 0.5:
+        return "GPU", "high variance = GPU hardware (variable load)"
+    return "Unknown", "pattern unclear"
 
 def format_status():
     sample = get_latest_sample()
     stats = get_session_stats()
     baseline = get_baseline()
+    behavior = get_behavioral_signature()
     
     lines = []
-    lines.append(f"{BOLD}═══ Claude ITT Fingerprint Monitor ═══{RESET}")
-    lines.append("")
+    w = 70  # width
+    
+    lines.append(f"{BOLD}{'═' * w}{RESET}")
+    lines.append(f"{BOLD}{'CLAUDE ITT FINGERPRINT MONITOR':^{w}}{RESET}")
+    lines.append(f"{BOLD}{'═' * w}{RESET}")
     
     if not sample:
-        lines.append(f"{DIM}No fingerprint data yet.{RESET}")
-        lines.append(f"{DIM}Ensure mitmproxy is running with mitm_itt_addon.py{RESET}")
+        lines.append("")
+        lines.append(f"{YELLOW}No fingerprint data yet.{RESET}")
+        lines.append("")
+        lines.append("To start collecting data:")
+        lines.append("  1. Run mitmproxy: mitmdump -s mitm_itt_addon.py -p 18888")
+        lines.append("  2. Set proxy: export HTTPS_PROXY=http://127.0.0.1:18888")
+        lines.append("  3. Run Claude Code: claude")
         return "\n".join(lines)
     
-    # Model
+    # ═══════════════════════════════════════════════════════════════════
+    # MODEL & ROUTING
+    # ═══════════════════════════════════════════════════════════════════
+    lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ MODEL & ROUTING{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
+    
     model = sample.get("model_response") or sample.get("model_requested") or "unknown"
     is_subagent = sample.get("is_subagent", 0)
     subagent_type = sample.get("subagent_type", "")
-    model_str = f"{model} {YELLOW}(subagent: {subagent_type}){RESET}" if is_subagent else model
-    lines.append(f"{CYAN}Model:{RESET} {model_str}")
     
-    # Backend
+    if "opus-4-5" in model.lower():
+        model_short = "Claude Opus 4.5 (Nov 2025)"
+    elif "sonnet-4-5" in model.lower():
+        model_short = "Claude Sonnet 4.5"
+    elif "haiku" in model.lower():
+        model_short = "Claude Haiku"
+    else:
+        model_short = model
+    
+    lines.append(f"  {WHITE}Model:{RESET}    {GREEN}{model_short}{RESET}")
+    lines.append(f"  {WHITE}Full ID:{RESET}  {DIM}{model}{RESET}")
+    
+    if is_subagent:
+        lines.append(f"  {WHITE}Routing:{RESET}  {YELLOW}SUBAGENT ({subagent_type}){RESET}")
+        lines.append(f"            {DIM}↳ Claude Code delegated this call to a cheaper model{RESET}")
+    else:
+        lines.append(f"  {WHITE}Routing:{RESET}  {GREEN}DIRECT{RESET}")
+        lines.append(f"            {DIM}↳ Your request went directly to the model you selected{RESET}")
+    
+    # Subagent stats
+    haiku = stats.get("haiku_count", 0)
+    sonnet = stats.get("sonnet_count", 0)
+    direct = stats.get("direct_count", 0)
+    total = haiku + sonnet + direct
+    if total > 0:
+        haiku_pct = (haiku / total) * 100
+        lines.append("")
+        lines.append(f"  {WHITE}Delegation Stats (all time):{RESET}")
+        lines.append(f"    Direct: {direct} ({(direct/total)*100:.1f}%)  |  Haiku: {haiku} ({haiku_pct:.1f}%)  |  Sonnet: {sonnet}")
+        if haiku_pct > 50:
+            lines.append(f"    {RED}⚠ WARNING: {haiku_pct:.0f}% of calls secretly went to Haiku{RESET}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # HARDWARE BACKEND
+    # ═══════════════════════════════════════════════════════════════════
+    lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ HARDWARE BACKEND{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
+    
     backend = sample.get("classified_backend", "unknown")
     confidence = sample.get("confidence", 0)
-    backend_colors = {"trainium": YELLOW, "tpu": BLUE, "gpu": MAGENTA}
-    bc = backend_colors.get(backend, DIM)
-    lines.append(f"{CYAN}Backend:{RESET} {bc}{backend}{RESET} ({confidence:.0f}%)")
+    backend_info = {
+        "trainium": ("AWS Trainium", "Anthropic's primary inference hardware", YELLOW),
+        "tpu": ("Google TPU", "Cloud TPU instances", BLUE),
+        "gpu": ("Standard GPU", "NVIDIA GPU clusters", MAGENTA),
+    }
+    bn, bd, bc = backend_info.get(backend, (backend, "Unknown hardware", DIM))
     
-    # Timing
+    lines.append(f"  {WHITE}Detected:{RESET}  {bc}{bn}{RESET} ({confidence:.0f}% confidence)")
+    lines.append(f"            {DIM}↳ {bd}{RESET}")
+    
+    # Backend distribution
+    hour_backends = stats.get("hour_backends", {})
+    if hour_backends:
+        lines.append("")
+        lines.append(f"  {WHITE}Last Hour Distribution:{RESET}")
+        for b, count in sorted(hour_backends.items(), key=lambda x: -x[1]):
+            bar_len = int((count / sum(hour_backends.values())) * 30)
+            bar = '█' * bar_len
+            lines.append(f"    {b:10} {bar} {count}")
+    
+    # Backend switches
+    switches = stats.get("switches", 0)
+    switch_list = stats.get("switch_list", [])
+    if switches > 0:
+        lines.append("")
+        switch_color = RED if switches > 30 else YELLOW if switches > 15 else GREEN
+        lines.append(f"  {WHITE}Backend Switches:{RESET} {switch_color}{switches}{RESET} in last 100 calls")
+        if switches > 20:
+            lines.append(f"    {RED}⚠ High switching indicates dynamic routing (cost optimization?){RESET}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # TIMING & PERFORMANCE
+    # ═══════════════════════════════════════════════════════════════════
+    lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ TIMING & PERFORMANCE{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
+    
     itt = sample.get("itt_mean_ms", 0)
     itt_std = sample.get("itt_std_ms", 0)
+    variance = sample.get("variance_coef", 0)
     tps = sample.get("tokens_per_sec", 0)
     ttft = sample.get("ttft_ms", 0)
-    lines.append(f"{CYAN}ITT:{RESET} {GREEN}{itt:.0f}ms{RESET} ±{itt_std:.0f}ms  |  {CYAN}TPS:{RESET} {GREEN}{tps:.0f}{RESET}  |  {CYAN}TTFT:{RESET} {ttft/1000:.1f}s")
+    p50 = sample.get("itt_p50_ms", 0)
+    p90 = sample.get("itt_p90_ms", 0)
+    p99 = sample.get("itt_p99_ms", 0)
     
-    # Percentiles
-    p50, p90, p99 = sample.get("itt_p50_ms", 0), sample.get("itt_p90_ms", 0), sample.get("itt_p99_ms", 0)
-    lines.append(f"{CYAN}Percentiles:{RESET} p50:{p50:.0f}ms  p90:{p90:.0f}ms  p99:{p99:.0f}ms")
+    # ITT explanation
+    lines.append(f"  {WHITE}Inter-Token Time (ITT):{RESET}")
+    lines.append(f"    Mean: {GREEN}{itt:.0f}ms{RESET} ±{itt_std:.0f}ms")
+    lines.append(f"    {DIM}↳ Time between each token. Lower = faster model.{RESET}")
     
-    # Thinking
+    # Stability
+    if variance < 0.3:
+        stab_str = f"{GREEN}STABLE{RESET} (variance {variance:.2f})"
+        stab_desc = "Consistent timing indicates dedicated resources"
+    elif variance < 0.6:
+        stab_str = f"{YELLOW}MODERATE{RESET} (variance {variance:.2f})"
+        stab_desc = "Some variability, typical for shared infrastructure"
+    else:
+        stab_str = f"{RED}UNSTABLE{RESET} (variance {variance:.2f})"
+        stab_desc = "High variability may indicate load balancing or throttling"
+    lines.append(f"    Stability: {stab_str}")
+    lines.append(f"    {DIM}↳ {stab_desc}{RESET}")
+    
+    lines.append("")
+    lines.append(f"  {WHITE}Throughput:{RESET}")
+    lines.append(f"    Speed: {GREEN}{tps:.0f}{RESET} tokens/second")
+    lines.append(f"    First Token: {GREEN}{ttft/1000:.1f}s{RESET}")
+    lines.append(f"    {DIM}↳ TTFT includes network latency + model warmup{RESET}")
+    
+    lines.append("")
+    lines.append(f"  {WHITE}Latency Percentiles:{RESET}")
+    lines.append(f"    p50 (median): {p50:.0f}ms  |  p90: {p90:.0f}ms  |  p99: {p99:.0f}ms")
+    
+    # Latency pattern analysis
+    pattern, pattern_desc = analyze_latency_pattern(p50, p90, p99, variance)
+    lines.append(f"    Pattern: {YELLOW}{pattern}{RESET} - {pattern_desc}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # THINKING BUDGET
+    # ═══════════════════════════════════════════════════════════════════
+    lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ THINKING BUDGET{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
+    
     thinking = sample.get("thinking_enabled", 0)
     budget = sample.get("thinking_budget_requested", 0)
     util = sample.get("thinking_utilization", 0)
-    if thinking:
-        lines.append(f"{CYAN}Thinking:{RESET} {RED}ON{RESET} (budget:{budget}, used:{util:.0f}%)")
+    avg_thinking = stats.get("avg_thinking", 0)
     
-    # Tokens & Cache
-    inp, out = sample.get("input_tokens", 0), sample.get("output_tokens", 0)
-    cache_eff = sample.get("cache_efficiency", 0)
-    lines.append(f"{CYAN}Tokens:{RESET} {inp}→{out}  |  {CYAN}Cache:{RESET} {cache_eff:.0f}%")
+    tier_name, tier_color, tier_emoji, tier_desc = get_thinking_tier(budget)
     
+    lines.append(f"  {WHITE}Status:{RESET}   {tier_emoji} {tier_color}{tier_name}{RESET}")
+    lines.append(f"            {DIM}↳ {tier_desc}{RESET}")
+    lines.append(f"  {WHITE}Budget:{RESET}   {budget:,} tokens requested")
+    lines.append(f"  {WHITE}Used:{RESET}     {GREEN}{util:.1f}%{RESET} of budget")
+    lines.append(f"  {WHITE}Session Avg:{RESET} {avg_thinking:.1f}% utilization")
+    
+    if budget > 0 and util < 20:
+        lines.append("")
+        lines.append(f"    {RED}⚠ LOW UTILIZATION: You requested {budget:,} tokens but only {util:.1f}% was used{RESET}")
+        lines.append(f"    {DIM}↳ This may indicate server-side throttling of thinking budget{RESET}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # CACHE & TOKENS
+    # ═══════════════════════════════════════════════════════════════════
     lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ CACHE & TOKENS{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
     
-    # Quality/Quantization
+    cache_eff = sample.get("cache_efficiency", 0)
+    avg_cache = stats.get("avg_cache", 0)
+    inp = sample.get("input_tokens", 0)
+    out = sample.get("output_tokens", 0)
+    cache_read = sample.get("cache_read_tokens", 0)
+    
+    lines.append(f"  {WHITE}Cache Efficiency:{RESET}")
+    lines.append(f"    This call: {GREEN}{cache_eff:.0f}%{RESET}  |  Session avg: {avg_cache:.0f}%")
+    lines.append(f"    {DIM}↳ Higher = more tokens served from cache = faster + cheaper{RESET}")
+    
+    lines.append(f"  {WHITE}Tokens:{RESET}")
+    lines.append(f"    Input: {inp:,}  |  Output: {out:,}  |  Cached: {cache_read:,}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # CONTEXT USAGE
+    # ═══════════════════════════════════════════════════════════════════
+    context_api = stats.get("context_api", 0)
+    context_ui = stats.get("context_ui", 0)
+    context_mismatch = stats.get("context_mismatch", 0)
+    
+    if context_api or context_ui:
+        lines.append("")
+        lines.append(f"{BOLD}{CYAN}▸ CONTEXT USAGE{RESET}")
+        lines.append(f"  {'─' * (w-4)}")
+        lines.append(f"  {WHITE}Actual (API):{RESET}     {GREEN}{context_api:.0f}%{RESET} of limit")
+        lines.append(f"  {WHITE}Displayed (UI):{RESET}   {context_ui:.0f}%")
+        if context_mismatch:
+            lines.append(f"    {RED}⚠ MISMATCH: UI shows {context_ui:.0f}% but API shows {context_api:.0f}%{RESET}")
+            lines.append(f"    {DIM}↳ Claude Code may be inflating context usage display{RESET}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # BEHAVIORAL SIGNATURE
+    # ═══════════════════════════════════════════════════════════════════
+    lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ BEHAVIORAL SIGNATURE{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
+    
+    sig = behavior.get("signature", "UNKNOWN")
+    conf = behavior.get("confidence", 0)
+    ver_ratio = behavior.get("verification_ratio", 0)
+    samples = behavior.get("samples", 0)
+    unverified = behavior.get("unverified_claims", 0)
+    
+    sig_info = {
+        "VERIFIER": (GREEN, "Reads before editing, shows evidence before claims"),
+        "COMPLETER": (RED, "Claims completion without verification, skips reading"),
+        "SYCOPHANT": (YELLOW, "Agrees without checking, excessive validation"),
+        "NEUTRAL": (DIM, "Mixed behavior patterns"),
+        "UNKNOWN": (DIM, "Insufficient data to classify"),
+    }
+    sc, sd = sig_info.get(sig, (DIM, ""))
+    
+    lines.append(f"  {WHITE}Pattern:{RESET}    {sc}{sig}{RESET} ({conf:.0f}% confidence)")
+    lines.append(f"              {DIM}↳ {sd}{RESET}")
+    lines.append(f"  {WHITE}Verification:{RESET} {ver_ratio:.0%} of actions verified")
+    lines.append(f"  {WHITE}Data Points:{RESET}  {samples} recent samples analyzed")
+    
+    if sig == "COMPLETER":
+        lines.append("")
+        lines.append(f"    {RED}⚠ COMPLETER PATTERN DETECTED{RESET}")
+        lines.append(f"    {DIM}↳ Model is claiming completion without showing evidence{RESET}")
+        lines.append(f"    {DIM}↳ This correlates with degraded quality / possible throttling{RESET}")
+    elif sig == "SYCOPHANT":
+        lines.append("")
+        lines.append(f"    {YELLOW}⚠ SYCOPHANT PATTERN DETECTED{RESET}")
+        lines.append(f"    {DIM}↳ Model is agreeing excessively without verification{RESET}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # QUALITY & QUANTIZATION
+    # ═══════════════════════════════════════════════════════════════════
+    lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ QUALITY & QUANTIZATION ANALYSIS{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
+    
     if baseline and baseline["itt"] > 0:
         timing_ratio = itt / baseline["itt"] if itt > 0 else 1.0
         var_current = sample.get("variance_coef", 0)
         variance_ratio = var_current / baseline["variance"] if baseline["variance"] > 0 else 1.0
+        tps_ratio = tps / baseline["tps"] if baseline["tps"] > 0 else 1.0
         
-        quant_type, quant_color, quant_conf = detect_quantization(timing_ratio, variance_ratio)
+        lines.append(f"  {WHITE}Baseline:{RESET} {baseline['count']} samples from last 24h (excluding last 30min)")
+        lines.append("")
         
-        lines.append(f"{BOLD}─── Quality Analysis ───{RESET}")
-        tr_color = RED if timing_ratio < 0.9 else (YELLOW if timing_ratio > 1.1 else GREEN)
-        vr_color = RED if variance_ratio > 1.3 else GREEN
-        lines.append(f"{CYAN}ITT Ratio:{RESET} {tr_color}{timing_ratio:.2f}x{RESET} baseline  |  {CYAN}Variance:{RESET} {vr_color}{variance_ratio:.2f}x{RESET}")
-        lines.append(f"{CYAN}Quantization:{RESET} {quant_color}{quant_type}{RESET} ({quant_conf}%)")
+        # Ratios with explanations
+        lines.append(f"  {WHITE}Timing Comparison:{RESET}")
+        tr_color = RED if timing_ratio < 0.85 else YELLOW if timing_ratio < 0.95 else GREEN
+        if timing_ratio < 0.85:
+            tr_meaning = "FASTER than baseline - suspicious (possible quantization)"
+        elif timing_ratio > 1.15:
+            tr_meaning = "SLOWER than baseline - possible throttling"
+        else:
+            tr_meaning = "Normal - matches baseline"
+        lines.append(f"    ITT Ratio: {tr_color}{timing_ratio:.2f}x{RESET} baseline")
+        lines.append(f"    {DIM}↳ {tr_meaning}{RESET}")
+        
+        lines.append("")
+        lines.append(f"  {WHITE}Variance Comparison:{RESET}")
+        vr_color = RED if variance_ratio > 1.3 else YELLOW if variance_ratio > 1.1 else GREEN
+        if variance_ratio > 1.3:
+            vr_meaning = "MORE VARIABLE than baseline - unstable inference"
+        elif variance_ratio < 0.8:
+            vr_meaning = "MORE STABLE than baseline"
+        else:
+            vr_meaning = "Normal - matches baseline"
+        lines.append(f"    Variance Ratio: {vr_color}{variance_ratio:.2f}x{RESET} baseline")
+        lines.append(f"    {DIM}↳ {vr_meaning}{RESET}")
+        
+        lines.append("")
+        lines.append(f"  {WHITE}Throughput Comparison:{RESET}")
+        lines.append(f"    TPS Ratio: {tps_ratio:.2f}x baseline")
+        
+        # Quantization detection
+        quant_type, quant_conf, quant_evidence = detect_quantization(timing_ratio, variance_ratio, tps_ratio)
+        
+        lines.append("")
+        lines.append(f"  {WHITE}Quantization Detection:{RESET}")
+        if quant_type in ["INT4", "INT4-GPTQ"]:
+            qc = RED
+            lines.append(f"    {qc}⚠ {quant_type} DETECTED{RESET} ({quant_conf}% confidence)")
+            lines.append(f"    {DIM}↳ Aggressive quantization = significant quality degradation{RESET}")
+        elif quant_type == "INT8":
+            qc = YELLOW
+            lines.append(f"    {qc}⚠ {quant_type} LIKELY{RESET} ({quant_conf}% confidence)")
+            lines.append(f"    {DIM}↳ Moderate quantization = minor quality impact{RESET}")
+        elif quant_type == "INT8?":
+            qc = YELLOW
+            lines.append(f"    {qc}? {quant_type}{RESET} ({quant_conf}% confidence)")
+            lines.append(f"    {DIM}↳ Uncertain - could be quantization or better hardware{RESET}")
+        else:
+            qc = GREEN
+            lines.append(f"    {qc}✓ {quant_type}{RESET} - Full precision (no quantization detected)")
+        
+        lines.append("")
+        lines.append(f"  {WHITE}Evidence:{RESET}")
+        for ev in quant_evidence:
+            lines.append(f"    • {ev}")
+        
+        # Overall quality score
+        lines.append("")
+        score = 70
+        if timing_ratio < 0.8: score -= 15
+        elif timing_ratio < 0.9: score -= 5
+        elif timing_ratio > 1.3: score -= 10
+        else: score += 10
+        if variance_ratio > 1.5: score -= 15
+        elif variance_ratio > 1.2: score -= 5
+        else: score += 5
+        if sig == "VERIFIER": score += 10
+        elif sig == "COMPLETER": score -= 15
+        score = max(0, min(100, score))
+        
+        if score >= 80:
+            mode, mode_color, emoji = "PREMIUM", GREEN, "🟢"
+            mode_desc = "All metrics within normal range"
+        elif score >= 50:
+            mode, mode_color, emoji = "STANDARD", YELLOW, "🟡"
+            mode_desc = "Some deviation from baseline"
+        else:
+            mode, mode_color, emoji = "DEGRADED", RED, "🔴"
+            mode_desc = "Significant deviation - possible throttling/quantization"
+        
+        lines.append(f"  {WHITE}Overall Quality:{RESET}")
+        lines.append(f"    {emoji} {mode_color}{mode}{RESET} ({score}/100)")
+        lines.append(f"    {DIM}↳ {mode_desc}{RESET}")
+        
     else:
-        lines.append(f"{DIM}Need 24h baseline for quality analysis{RESET}")
+        lines.append(f"  {DIM}Insufficient baseline data (need 24h of samples){RESET}")
+        lines.append(f"  {DIM}Quality analysis will be available after collecting more data.{RESET}")
     
+    # ═══════════════════════════════════════════════════════════════════
+    # SESSION SUMMARY
+    # ═══════════════════════════════════════════════════════════════════
     lines.append("")
+    lines.append(f"{BOLD}{CYAN}▸ SESSION SUMMARY{RESET}")
+    lines.append(f"  {'─' * (w-4)}")
     
-    # Session
-    if stats:
-        lines.append(f"{BOLD}─── Session ───{RESET}")
-        lines.append(f"Samples: {stats.get('total', 0)} total, {stats.get('hour_count', 0)} last hour  |  Avg ITT: {stats.get('avg_itt', 0):.0f}ms")
-        backends = stats.get("backends", {})
-        if backends:
-            lines.append(f"Backends: {', '.join([f'{k}:{v}' for k,v in backends.items()])}")
+    total = stats.get("total", 0)
+    hour = stats.get("hour_count", 0)
+    lines.append(f"  {WHITE}Total API Calls:{RESET}  {GREEN}{total:,}{RESET}")
+    lines.append(f"  {WHITE}Last Hour:{RESET}        {hour} calls")
+    lines.append(f"  {WHITE}Avg ITT (1h):{RESET}     {stats.get('avg_itt', 0):.0f}ms")
     
+    # Footer
     lines.append("")
-    lines.append(f"{DIM}Last: {sample.get('timestamp', '')}{RESET}")
+    lines.append(f"{'─' * w}")
+    lines.append(f"{DIM}Last update: {sample.get('timestamp', '')}{RESET}")
     
     return "\n".join(lines)
 
@@ -168,12 +564,12 @@ def main():
     else:
         try:
             while True:
-                print("\033[2J\033[H", end="")  # clear
+                print("\033[2J\033[H", end="")
                 print(format_status())
-                print(f"\n{DIM}Ctrl+C to exit. Refresh: 2s{RESET}")
+                print(f"\n{DIM}Press Ctrl+C to exit | Auto-refresh every 2 seconds{RESET}")
                 time.sleep(2)
         except KeyboardInterrupt:
-            print(f"\n{DIM}Exiting...{RESET}")
+            print(f"\n{DIM}Monitor stopped.{RESET}")
 
 if __name__ == "__main__":
     main()
