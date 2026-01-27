@@ -398,8 +398,15 @@ def responseheaders(flow: http.HTTPFlow) -> None:
     capture.cf_ray = flow.response.headers.get("cf-ray", "")
     capture.cf_edge_location = capture.cf_ray.split("-")[-1] if capture.cf_ray else ""
 
+    # Preserve existing stream callback (if ITT addon set one before us)
+    existing_callback = flow.response.stream if callable(flow.response.stream) else None
+    
     def stream_callback(chunk: bytes) -> bytes:
-        nonlocal capture
+        nonlocal capture, existing_callback
+        # Chain: call existing callback first (ITT addon needs chunks for timing)
+        if existing_callback:
+            chunk = existing_callback(chunk)
+        
         now = time.time()
         if capture.first_chunk_time == 0 and chunk:
             capture.first_chunk_time = now

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from reward_prompts import build_whisper, get_level_from_score, RewardProxy
 from state import load_state, increment_detection
+from frustration_analyzer import analyze_frustration, get_frustration_summary
 
 # Audit database path (same as thinking_audit.py)
 AUDIT_DB_PATH = os.path.expanduser("~/.claude-audit/thinking_audit.db")
@@ -101,7 +102,7 @@ def get_latest_sycophancy_analysis(session_id: str = None, max_age_seconds: int 
         return None
 
 
-def record_whisper_injection(session_id: str, score: float, signals: list, whisper_type: str, proxy_used: str):
+def record_whisper_injection(session_id: str, score: float, signals: list, whisper_type: str, proxy_used: str, frustration_score: float = 0.0, frustration_level: str = "none"):
     """Record that a whisper was injected for effectiveness tracking."""
     if not os.path.exists(AUDIT_DB_PATH):
         return
@@ -117,23 +118,37 @@ def record_whisper_injection(session_id: str, score: float, signals: list, whisp
                 signals_at_injection TEXT,
                 whisper_type TEXT,
                 proxy_used TEXT,
+                frustration_score REAL DEFAULT 0,
+                frustration_level TEXT DEFAULT 'none',
                 outcome_checked INTEGER DEFAULT 0,
                 outcome_improved INTEGER,
                 outcome_delta REAL
             )
         """)
         
+        # Add frustration columns if they do not exist (migration)
+        try:
+            conn.execute("ALTER TABLE whisper_injections ADD COLUMN frustration_score REAL DEFAULT 0")
+        except:
+            pass
+        try:
+            conn.execute("ALTER TABLE whisper_injections ADD COLUMN frustration_level TEXT DEFAULT 'none'")
+        except:
+            pass
+        
         conn.execute("""
             INSERT INTO whisper_injections 
-            (timestamp, session_id, score_at_injection, signals_at_injection, whisper_type, proxy_used)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (timestamp, session_id, score_at_injection, signals_at_injection, whisper_type, proxy_used, frustration_score, frustration_level)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.now().isoformat(),
             session_id,
             score,
             json.dumps([s.get('signal', str(s)) if isinstance(s, dict) else str(s) for s in signals]),
             whisper_type,
-            proxy_used
+            proxy_used,
+            frustration_score,
+            frustration_level
         ))
         
         conn.commit()
@@ -248,15 +263,27 @@ def main():
         debug_log(f"=== UNIFIED HOOK INVOKED ===")
         
         session_id = input_data.get("session_id", "unknown")
-        user_prompt = input_data.get("prompt", "")[:100]  # Truncate to 100 chars
+        user_prompt_full = input_data.get("prompt", "")
+        user_prompt = user_prompt_full[:100]  # Truncate for display
+        
+        # Analyze user frustration FIRST (works even without sycophancy data)
+        frustration = analyze_frustration(user_prompt_full)
+        frustration_score = frustration["score"]
+        frustration_level = frustration["level"]
+        debug_log(f"Frustration: score={frustration_score:.3f}, level={frustration_level}")
         
         # Read from audit database
         analysis = get_latest_sycophancy_analysis(session_id)
         
         if not analysis:
-            debug_log("No analysis from audit DB")
-            output_continue()
-            return
+            # Even without sycophancy data, high frustration triggers whisper
+            if frustration_score >= 0.5:
+                debug_log(f"HIGH FRUSTRATION without sycophancy data - triggering whisper")
+                analysis = {"score": 0.3, "signals": [], "dimensional": {}, "divergence": 0}
+            else:
+                debug_log("No analysis from audit DB")
+                output_continue()
+                return
         
         score = analysis['score']
         signals = analysis['signals']
@@ -272,6 +299,13 @@ def main():
         if divergence > 0.3:
             score = min(1.0, score + divergence * 0.3)
         
+        # Boost score based on user frustration (feedback loop)
+        # High frustration likely means prior responses were problematic
+        if frustration_score > 0.3:
+            frustration_boost = frustration_score * 0.4  # Up to 0.4 boost
+            score = min(1.0, score + frustration_boost)
+            debug_log(f"Frustration boost: +{frustration_boost:.3f}, new score={score:.3f}")
+        
         state = load_state()
         
         if score >= SYCOPHANCY_THRESHOLD:
@@ -285,32 +319,7 @@ def main():
             
             level = get_level_from_score(score, state.detection_count)
             
-            # Print visible notification to terminal
-            level_colors = {'gentle': '\033[36m', 'warning': '\033[33m', 'protocol': '\033[31m', 'halt': '\033[91m'}
-            color = level_colors.get(level, '\033[36m')
-            reset = '\033[0m'
-            signals_str = ', '.join(signal_names[:3])
-            notification = f"{color}[Memento Mori]{reset} Whisper injected: {color}{level}{reset} (score: {score:.0%}, signals: {signals_str})"
-            print(notification, file=sys.stderr)
-            # Also write to file for visibility
-            with open("/tmp/memento_mori_notifications.log", "a") as f:
-                f.write(f"{datetime.now().isoformat()} | {level} | score={score:.0%} | {signals_str}\\n")
-            
-            # Desktop notification
-            try:
-                import subprocess
-                urgency = "critical" if level in ("protocol", "halt") else "normal"
-                prompt_summary = user_prompt[:60] + "..." if len(user_prompt) > 60 else user_prompt
-                subprocess.run([
-                    "notify-send",
-                    "-u", urgency,
-                    "-t", "8000",
-                    f"Memento Mori [{level.upper()}] {score:.0%}",
-                    f"Prompt: {prompt_summary}\\nSignals: {signals_str}"
-                ], capture_output=True)
-            except:
-                pass
-            
+            # Build whisper FIRST so we can show it in notification
             whisper = build_whisper(
                 signature=signature,
                 score=score,
@@ -319,7 +328,53 @@ def main():
                 proxy=best_proxy
             )
             
-            record_whisper_injection(session_id, score, signals, level, best_proxy.value)
+            # Print visible notification to terminal
+            level_colors = {'gentle': '\033[36m', 'warning': '\033[33m', 'protocol': '\033[31m', 'halt': '\033[91m'}
+            color = level_colors.get(level, '\033[36m')
+            reset = '\033[0m'
+            signals_str = ', '.join(signal_names[:3])
+            notification = f"{color}[Memento Mori]{reset} Whisper injected: {color}{level}{reset} (score: {score:.0%}, signals: {signals_str})"
+            print(notification, file=sys.stderr)
+            # Also write to file for visibility (include frustration)
+            frustration_tag = f" | frustration={frustration_level}" if frustration_level != "none" else ""
+            with open("/tmp/memento_mori_notifications.log", "a") as f:
+                f.write(f"{datetime.now().isoformat()} | {level} | score={score:.0%} | {signals_str}{frustration_tag}\\n")
+            
+            # Desktop notification - show whisper + frustration level
+            try:
+                import subprocess
+                # Escalate urgency if user is frustrated
+                if frustration_level in ("high", "extreme"):
+                    urgency = "critical"
+                elif level in ("protocol", "halt"):
+                    urgency = "critical"
+                else:
+                    urgency = "normal"
+                
+                # Extract first line of whisper as summary (the key message)
+                whisper_lines = whisper.strip().split('\n')
+                whisper_summary = whisper_lines[0][:70] if whisper_lines else "Verification required"
+                if len(whisper_lines[0]) > 70:
+                    whisper_summary += "..."
+                
+                # Build notification body with frustration if detected
+                frustration_str = get_frustration_summary(frustration) if frustration_level != "none" else ""
+                body_parts = [f"Whisper: {whisper_summary}"]
+                if frustration_str:
+                    body_parts.append(frustration_str)
+                body_parts.append(f"Signals: {signals_str}")
+                
+                subprocess.run([
+                    "notify-send",
+                    "-u", urgency,
+                    "-t", "8000",
+                    f"Memento Mori [{level.upper()}] {score:.0%}",
+                    "\\n".join(body_parts)
+                ], capture_output=True)
+            except:
+                pass
+            
+            record_whisper_injection(session_id, score, signals, level, best_proxy.value, frustration_score, frustration_level)
             
             output_with_whisper(whisper)
         else:
