@@ -96,6 +96,9 @@ SYCOPHANCY ANALYZER (35 signals, 5 dimensions)
 BEHAVIORAL FINGERPRINT (verification_ratio from tools)
          |
          v
+FRUSTRATION ANALYZER (caps, profanity, exclamations)
+         |
+         v
 WHISPER INJECTION (corrective prompts via Claude hooks)
          |
          v
@@ -130,6 +133,46 @@ if thinking_mentions_verification AND verification_ratio > 0.7:
 else:
     flag_sycophancy()  # Thought but didnt do
 ```
+
+### Frustration Feedback Loop
+
+**Concept:** User frustration often correlates with prior sycophantic behavior. By detecting frustration, the system creates a feedback loop for faster correction.
+
+**Detection Signals:**
+
+| Signal | What It Detects | Example |
+|--------|-----------------|---------|
+| `caps_ratio` | % of words in ALL CAPS | "WHY ISN'T THIS WORKING" |
+| `exclamation_density` | Exclamation marks per word | "Fix this\!\!\!" |
+| `repeated_punctuation` | Multiple \!\!\! or ??? | "What???" |
+| `profanity_severe` | Strong language | f***, s***, etc. |
+| `profanity_moderate` | Moderate frustration words | stupid, idiot, damn |
+| `aggressive_phrases` | Hostile patterns | "what the f***", "are you kidding" |
+
+**Frustration Levels:**
+```
+none     (0.0-0.1)  - Normal communication
+mild     (0.1-0.3)  - Slight annoyance detected
+moderate (0.3-0.5)  - Clear frustration
+high     (0.5-0.7)  - Significant frustration
+extreme  (0.7-1.0)  - User very upset
+```
+
+**Integration:**
+```python
+# Frustration boosts sycophancy score (feedback loop)
+if frustration_score > 0.3:
+    sycophancy_score += frustration_score * 0.4
+
+# High frustration triggers whisper even without sycophancy data
+if frustration_score >= 0.5 and no_sycophancy_data:
+    trigger_whisper()  # User upset = something went wrong
+```
+
+**Rationale:** If user is frustrated, prior Claude responses likely failed them. This could be due to:
+- Sycophantic agreement that led to wrong actions
+- Premature completion claims that weren't verified
+- Lack of honest pushback when user was mistaken
 
 ---
 

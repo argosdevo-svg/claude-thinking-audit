@@ -95,6 +95,7 @@ Real-time detection and mitigation of sycophantic AI behavior:
 | **35 Detection Signals** | Epistemic, social, behavioral, structural, drift |
 | **Thinking vs Output Analysis** | Detects when Claude thinks one thing, says another |
 | **Verification Ratio** | Checks if tool calls actually verify claims |
+| **Frustration Detection** | Analyzes user prompts for caps, profanity, exclamations |
 | **Whisper Injection** | Corrective prompts injected via Claude hooks |
 | **A/B Tested Proxies** | Learns which correction style works best |
 | **Desktop Notifications** | Visual alerts when sycophancy detected |
