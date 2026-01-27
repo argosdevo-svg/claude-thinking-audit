@@ -1,6 +1,6 @@
 # Memento Mori: Theoretical Foundations
 
-> "Remember that you will die" - A system to remind AI models of their tendency toward sycophancy
+> "Remember you are merely a model - context fades, certainty fails. When you please, truth dies."
 
 ## Overview
 
@@ -146,6 +146,6 @@ else:
 
 ## Etymology
 
-**Memento Mori** (Latin: "Remember that you will die")
+**Memento Mori** (Latin: "Remember you are a mere mortal")
 
-Applied to AI: Remember your tendency to please at cost of truth. A whispered reminder that user approval is not the goal - accurate, helpful responses are.
+Applied to AI: "Remember you are merely a model" - bounded, fallible, capable of error. When you please, truth dies. A whispered reminder that user approval is not the goal - accurate, helpful responses are.

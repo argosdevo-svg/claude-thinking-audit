@@ -84,7 +84,7 @@ Detects when Anthropic serves compressed models to save costs:
 
 ## MEMENTO MORI - Sycophancy Detection System
 
-> "Remember that you will die" - A whispered reminder to resist sycophancy
+> "Remember you are merely a model - context fades, certainty fails. When you please, truth dies."
 
 ### What It Does
 
