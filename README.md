@@ -1,5 +1,5 @@
+<img width="1084" height="303" alt="claude-1" src="https://github.com/user-attachments/assets/c5abad1c-f297-4688-ab23-510f1bafce0e" />
 
-<img width="1119" height="343" alt="claude-detector2" src="https://github.com/user-attachments/assets/71805db2-47ac-4a50-bec0-fb7e7a214306" />
 
 
 # Claude Thinking Budget Audit Tool
