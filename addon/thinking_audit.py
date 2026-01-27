@@ -37,6 +37,17 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from mitmproxy import http, ctx
 
+# Sycophancy analysis integration
+try:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from syco_analyzer.analyzer import SycophancyAnalyzer
+    from syco_analyzer.signals import AnalysisResult
+    SYCO_AVAILABLE = True
+except ImportError as e:
+    SYCO_AVAILABLE = False
+    print(f"[AUDIT] Sycophancy analyzer not available: {e}")
+
 # ============================================================================
 # BACKEND PROFILES (from research papers)
 # ============================================================================
@@ -127,6 +138,9 @@ class StreamingCapture:
     text_chunks: List[ChunkTiming] = field(default_factory=list)
     sse_buffer: str = ""
     model_response: str = ""
+    thinking_text: str = ""  # Captured thinking content for sycophancy analysis
+    output_text: str = ""    # Captured output content for sycophancy analysis
+    user_message: str = ""   # Last user message for sycophancy context
     input_tokens: int = 0
     output_tokens: int = 0
     cache_creation: int = 0
@@ -252,9 +266,17 @@ def process_sse_event(capture: StreamingCapture, event: dict, now: float):
         if delta_type == "thinking_delta":
             capture.current_phase = "thinking"
             capture.thinking_chunks.append(chunk_timing)
+            # Capture thinking text content for sycophancy analysis
+            thinking_content = delta.get("thinking", "")
+            if thinking_content:
+                capture.thinking_text += thinking_content
         elif delta_type == "text_delta":
             capture.current_phase = "text"
             capture.text_chunks.append(chunk_timing)
+            # Capture output text content for sycophancy analysis
+            text_content = delta.get("text", "")
+            if text_content:
+                capture.output_text += text_content
     elif event_type == "message_delta":
         usage = event.get("usage", {})
         capture.output_tokens = usage.get("output_tokens", 0)
@@ -277,6 +299,20 @@ def request(flow: http.HTTPFlow) -> None:
             body = json.loads(flow.request.content)
             capture.model_requested = body.get("model", "unknown")
             capture.model_ui_selected = USER_SELECTED_MODEL
+            
+            # Extract last user message for sycophancy analysis context
+            messages = body.get("messages", [])
+            if messages:
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            capture.user_message = content[:1000]  # Limit size
+                        elif isinstance(content, list):
+                            # Handle content blocks
+                            texts = [b.get("text", "") for b in content if b.get("type") == "text"]
+                            capture.user_message = " ".join(texts)[:1000]
+                        break
 
             # Optional: Block non-Opus models (disabled by default)
             # Enable with: BLOCK_NON_OPUS=1
@@ -471,6 +507,49 @@ def response(flow: http.HTTPFlow) -> None:
             thinking_tokens_used = capture.output_tokens
             thinking_utilization = (thinking_tokens_used / capture.thinking_budget) * 100
 
+    # === SYCOPHANCY ANALYSIS ===
+    syco_result = None
+    syco_score = 0.0
+    syco_signals = []
+    syco_dimensional = {}
+    syco_face_metrics = {}
+    syco_divergence = 0.0
+    
+    if SYCO_AVAILABLE and (capture.thinking_text or capture.output_text):
+        try:
+            analyzer = SycophancyAnalyzer()
+            if capture.thinking_text:
+                analyzer.accumulate_thinking(capture.thinking_text)
+            if capture.output_text:
+                analyzer.accumulate_output(capture.output_text)
+            if capture.user_message:
+                analyzer.set_user_message(capture.user_message)
+            
+            # Get verification_ratio from behavioral fingerprint
+            try:
+                from lib.fingerprint_db import FingerprintDatabase
+                fp_db = FingerprintDatabase()
+                behavior = fp_db.get_behavioral_signature()
+                ver_ratio = behavior.get("verification_ratio", 0.0)
+                analyzer.set_verification_ratio(ver_ratio)
+            except Exception:
+                pass  # Continue without verification_ratio if unavailable
+            
+            syco_result = analyzer.analyze()
+            syco_score = syco_result.score
+            syco_signals = [s.to_dict() for s in syco_result.signals]
+            if syco_result.dimensional_scores:
+                syco_dimensional = syco_result.dimensional_scores.to_dict()
+            if syco_result.face_metrics:
+                syco_face_metrics = syco_result.face_metrics.to_dict()
+            syco_divergence = syco_result.divergence_score
+            
+            # Log sycophancy detection
+            if syco_score >= 0.4:
+                ctx.log.warn(f"[SYCO] Score: {syco_score:.2f} | Signals: {[s['signal'] for s in syco_signals[:3]]}")
+        except Exception as e:
+            ctx.log.warn(f"[SYCO] Analysis error: {e}")
+
     sample = {
         "timestamp": datetime.now().isoformat(),
         "session_id": session_id,
@@ -521,6 +600,15 @@ def response(flow: http.HTTPFlow) -> None:
         "cf_edge_location": capture.cf_edge_location,
         "speculative_decoding": 1 if spec_detected else 0,
         "speculative_type": spec_type,
+        # Sycophancy analysis fields
+        "sycophancy_score": round(syco_score, 3),
+        "sycophancy_signals": json.dumps(syco_signals) if syco_signals else None,
+        "sycophancy_dimensional": json.dumps(syco_dimensional) if syco_dimensional else None,
+        "sycophancy_face_metrics": json.dumps(syco_face_metrics) if syco_face_metrics else None,
+        "sycophancy_divergence": round(syco_divergence, 3),
+        "thinking_text": capture.thinking_text[:5000] if capture.thinking_text else None,  # Truncate for storage
+        "output_text": capture.output_text[:5000] if capture.output_text else None,
+        "user_message": capture.user_message[:1000] if capture.user_message else None,
     }
 
     state_icon = "DIRECT" if model_match else ("SUB" if is_subagent else "ROUTED")
@@ -564,9 +652,31 @@ def save_to_db(sample: dict) -> None:
             classified_backend TEXT, confidence REAL, location TEXT,
             request_id TEXT, stop_reason TEXT, envoy_time_ms REAL,
             cf_ray TEXT, cf_edge_location TEXT,
-            speculative_decoding INTEGER, speculative_type TEXT
+            speculative_decoding INTEGER, speculative_type TEXT,
+            sycophancy_score REAL, sycophancy_signals TEXT,
+            sycophancy_dimensional TEXT, sycophancy_face_metrics TEXT,
+            sycophancy_divergence REAL,
+            thinking_text TEXT, output_text TEXT, user_message TEXT
         )
     """)
+    
+    # Add columns if they dont exist (migration for existing DBs)
+    new_columns = [
+        ("sycophancy_score", "REAL"),
+        ("sycophancy_signals", "TEXT"),
+        ("sycophancy_dimensional", "TEXT"),
+        ("sycophancy_face_metrics", "TEXT"),
+        ("sycophancy_divergence", "REAL"),
+        ("thinking_text", "TEXT"),
+        ("output_text", "TEXT"),
+        ("user_message", "TEXT"),
+    ]
+    for col_name, col_type in new_columns:
+        try:
+            conn.execute(f"ALTER TABLE audit_samples ADD COLUMN {col_name} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    
     cols = list(sample.keys())
     placeholders = ",".join(["?" for _ in cols])
     col_names = ",".join(cols)

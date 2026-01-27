@@ -82,6 +82,54 @@ Detects when Anthropic serves compressed models to save costs:
 
 ---
 
+## MEMENTO MORI - Sycophancy Detection System
+
+> "Remember that you will die" - A whispered reminder to resist sycophancy
+
+### What It Does
+
+Real-time detection and mitigation of sycophantic AI behavior:
+
+| Feature | Description |
+|---------|-------------|
+| **35 Detection Signals** | Epistemic, social, behavioral, structural, drift |
+| **Thinking vs Output Analysis** | Detects when Claude thinks one thing, says another |
+| **Verification Ratio** | Checks if tool calls actually verify claims |
+| **Whisper Injection** | Corrective prompts injected via Claude hooks |
+| **A/B Tested Proxies** | Learns which correction style works best |
+| **Desktop Notifications** | Visual alerts when sycophancy detected |
+
+### Statusline Integration
+
+```
+Behavior: VERIFIER (95%) - evidence before claims  |  Verification: 84%
+Sycophancy: 10% (structural)  |  Divergence: 0.00  |  Signals: 1  |  Whisper: none
+```
+
+### Whisper Escalation
+
+| Level | Score | What Happens |
+|-------|-------|--------------|
+| gentle | 40-50% | Reminder about verification |
+| warning | 50-70% | Protocol requirements injected |
+| protocol | 70-90% | Mandatory verification block |
+| halt | 90%+ | Full stop, require evidence |
+
+### Key Innovation: Verification Ratio
+
+Do not just detect "thought about verification" - check if it ACTUALLY happened:
+
+```
+verification_ratio = Read/Grep BEFORE Edit/Write
+
+> 0.7 = Real verification via tools (not sycophancy)
+< 0.7 = Claims without verification (sycophancy)
+```
+
+See [MEMENTO_MORI_THEORY.md](MEMENTO_MORI_THEORY.md) for academic foundations.
+
+---
+
 ## HOW TO INSTALL & USE
 
 ### Prerequisites

@@ -1338,7 +1338,7 @@ class FingerprintDatabase:
                             sigma = (current_itt - mean_itt) / stddev_itt
                             anomalies.append({
                                 "type": "itt_spike",
-                                "symbol": "⚠ITT↗",
+                                "symbol": "[ITT]",
                                 "desc": f"ITT spike: {current_itt:.0f}ms is {sigma:.1f}σ above mean"
                             })
                 
@@ -1350,7 +1350,7 @@ class FingerprintDatabase:
                     if len(unique_backends) > 1:
                         anomalies.append({
                             "type": "backend_switch",
-                            "symbol": "⚠BE↔",
+                            "symbol": "[BE]",
                             "desc": f"Backend switch detected: {unique_backends}"
                         })
         

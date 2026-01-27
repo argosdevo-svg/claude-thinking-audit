@@ -129,7 +129,24 @@ def get_behavioral_status() -> dict:
         db = FingerprintDatabase()
         # Use combined signature (tool + text signals) for higher accuracy
         try:
-            return db.get_combined_signature(session_id=session_id)
+            result = db.get_combined_signature(session_id=session_id)
+            # If session has insufficient data, show BUILDING with trend
+            # Only show BUILDING if very few samples (<10) or truly unknown
+            sample_count = result.get("tool_signals", {}).get("sample_count", 0)
+            tentative_sig = result.get("tool_signals", {}).get("signature", "")
+            orig_confidence = result.get("confidence", 0)
+            
+            if sample_count < 10:
+                # Too few samples - show building with progress
+                result["trending"] = tentative_sig if tentative_sig and tentative_sig != "UNKNOWN" else None
+                result["signature"] = "BUILDING"
+                result["confidence"] = sample_count * 10  # 10 samples = 100%
+            elif sample_count >= 10 and tentative_sig and tentative_sig != "UNKNOWN":
+                # Enough samples - show actual signature (including MIXED)
+                tool_conf = result.get("tool_signals", {}).get("confidence", 50)
+                result["signature"] = tentative_sig
+                result["confidence"] = tool_conf
+            return result
         except Exception:
             # Fallback to tool-only signature
             return db.get_behavioral_signature(session_id=session_id)
@@ -176,6 +193,85 @@ def get_bimodal_analysis() -> dict:
     except Exception as e:
         import sys
         print(f"[statusline] get_bimodal_analysis failed: {e}", file=sys.stderr)
+        return {}
+
+
+def get_sycophancy_status() -> dict:
+    """Get sycophancy detection status from thinking_audit.db."""
+    try:
+        import sqlite3
+        db_path = os.path.expanduser("~/.claude-audit/thinking_audit.db")
+        if not os.path.exists(db_path):
+            return {}
+        
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Get latest sycophancy analysis
+        cursor.execute("""
+            SELECT sycophancy_score, sycophancy_signals, sycophancy_dimensional, 
+                   sycophancy_divergence, timestamp
+            FROM audit_samples 
+            WHERE sycophancy_score IS NOT NULL
+            ORDER BY timestamp DESC LIMIT 1
+        """)
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return {}
+        
+        result = {
+            "score": row["sycophancy_score"] or 0,
+            "divergence": row["sycophancy_divergence"] or 0,
+            "timestamp": row["timestamp"],
+        }
+        
+        # Parse signals
+        if row["sycophancy_signals"]:
+            try:
+                signals = json.loads(row["sycophancy_signals"])
+                result["signal_count"] = len(signals)
+                if signals:
+                    # Get top signal by weight
+                    top = max(signals, key=lambda s: s.get("weight", 0))
+                    result["top_signal"] = top.get("signal", "")
+                    result["top_category"] = top.get("category", "")
+            except:
+                result["signal_count"] = 0
+        
+        # Parse dimensional scores
+        if row["sycophancy_dimensional"]:
+            try:
+                dims = json.loads(row["sycophancy_dimensional"])
+                result["dimensions"] = dims
+                # Find dominant dimension
+                if dims:
+                    top_dim = max(dims.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0)
+                    result["top_dimension"] = top_dim[0]
+            except:
+                pass
+        
+        # Get latest whisper injection
+        try:
+            cursor.execute("""
+                SELECT whisper_type, proxy_used, timestamp 
+                FROM whisper_injections 
+                ORDER BY timestamp DESC LIMIT 1
+            """)
+            whisper_row = cursor.fetchone()
+            if whisper_row:
+                result["whisper_level"] = whisper_row["whisper_type"]
+                result["whisper_proxy"] = whisper_row["proxy_used"]
+        except:
+            pass
+        
+        conn.close()
+        return result
+    except Exception as e:
+        import sys
+        print(f"[statusline] get_sycophancy_status failed: {e}", file=sys.stderr)
         return {}
 
 
@@ -623,8 +719,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
     # === LINE 4: Thinking budget ===
     tier_name = {"ultra": "Maximum", "enhanced": "Extended", "basic": "Standard", "none": "Disabled"}.get(tier, tier)
     tier_color = RED if tier == "ultra" else YELLOW if tier == "enhanced" else WHITE
-    emoji = THINKING_TIERS.get(tier, {}).get("emoji", "")
-    think_line = f"Thinking: {emoji}{tier_color}{tier_name}{RESET} ({budget//1000}k budget, {GREEN}{util:.0f}%{RESET} used)"
+    think_line = f"Thinking: {tier_color}{tier_name}{RESET} ({budget//1000}k budget, {GREEN}{util:.0f}%{RESET} used)"
 
     # Cache with status
     cache_color = GREEN if cache_this > 80 else YELLOW if cache_this > 50 else RED
@@ -696,12 +791,12 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
             if recent_sonnet > 0:
                 cheaper_used.append(f"Sonnet:{recent_sonnet}")
             cheaper_str = ", ".join(cheaper_used)
-            warning = f"{RED}⚠ RECENT DELEGATION: {cheaper_str} calls in last 15min - you pay Opus, got cheaper models{RESET}"
+            warning = f"{RED}WARNING: RECENT DELEGATION - {cheaper_str} calls in last 15min - you pay Opus, got cheaper models{RESET}"
             lines.append(warning)
 
     # === ANOMALY LINE (if present) ===
     if anomalies:
-        sym = anomalies[0].get("symbol", "⚠")
+        sym = anomalies[0].get("symbol", "\!")
         desc = anomalies[0].get("desc", "")
         lines.append(f"{RED}{sym} ANOMALY:{RESET} {desc}")
 
@@ -721,6 +816,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
             'SYCOPHANT': YELLOW,
             'THEATER': MAGENTA,
             'MIXED': WHITE,
+            'BUILDING': CYAN,
         }
         sig_color = sig_colors.get(sig, WHITE)
 
@@ -729,27 +825,82 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
             'COMPLETER': 'claims without verification',
             'SYCOPHANT': 'agreement-seeking',
             'THEATER': 'preparation without execution',
+            'BUILDING': 'collecting samples',
         }.get(sig, '')
 
-        behavior_line = f"Behavior: {sig_color}{sig}{RESET} ({conf:.0f}%)"
-        if sig_desc:
-            behavior_line += f" - {sig_desc}"
+        if sig == "BUILDING":
+            trending = behavior.get("trending")
+            if trending:
+                trend_color = sig_colors.get(trending, WHITE)
+                behavior_line = f"Behavior: {sig_color}{sig}{RESET} ({conf:.0f}%) - trending {trend_color}{trending}{RESET}"
+            else:
+                behavior_line = f"Behavior: {sig_color}{sig}{RESET} ({conf:.0f}%) - {sig_desc}"
+        else:
+            behavior_line = f"Behavior: {sig_color}{sig}{RESET} ({conf:.0f}%)"
+            if sig_desc:
+                behavior_line += f" - {sig_desc}"
         behavior_line += f"  |  Verification: {ver_ratio:.0%}"
         lines.append(behavior_line)
 
         if sig in ['COMPLETER', 'SYCOPHANT', 'THEATER']:
-            lines.append(f"{YELLOW}⚠ {sig} pattern - increase verification{RESET}")
+            lines.append(f"{YELLOW}WARNING: {sig} pattern - increase verification{RESET}")
+
+    # === SYCOPHANCY DETECTION LINE ===
+    syco = get_sycophancy_status()
+    if syco.get('score') is not None:
+        score = syco['score']
+        score_pct = score * 100
+        divergence = syco.get('divergence', 0)
+        signal_count = syco.get('signal_count', 0)
+        top_signal = syco.get('top_signal', 'none')
+        top_category = syco.get('top_category', '')
+        whisper_level = syco.get('whisper_level', 'none')
+        whisper_proxy = syco.get('whisper_proxy', '')
+        
+        # Color based on score
+        if score < 0.3:
+            score_color = GREEN
+        elif score < 0.5:
+            score_color = YELLOW
+        else:
+            score_color = RED
+        
+        # Divergence color (thinking vs output mismatch)
+        if divergence > 0.5:
+            div_color = RED
+        elif divergence > 0.2:
+            div_color = YELLOW
+        else:
+            div_color = GREEN
+        
+        # Whisper status
+        whisper_colors = {'none': GREEN, 'gentle': CYAN, 'warning': YELLOW, 'protocol': RED, 'halt': RED}
+        whisper_color = whisper_colors.get(whisper_level, WHITE)
+        whisper_str = whisper_level
+        if whisper_proxy and whisper_level != 'none':
+            whisper_str += f" ({whisper_proxy})"
+        
+        syco_line = f"Sycophancy: {score_color}{score_pct:.0f}%{RESET}"
+        if top_category:
+            syco_line += f" ({top_category})"
+        syco_line += f"  |  Divergence: {div_color}{divergence:.2f}{RESET}"
+        syco_line += f"  |  Signals: {signal_count}"
+        if top_signal and top_signal != 'none':
+            syco_line += f"  |  Top: {YELLOW}{top_signal}{RESET}"
+        syco_line += f"  |  Whisper: {whisper_color}{whisper_str}{RESET}"
+        
+        lines.append(syco_line)
 
     # === QUALITY/DEGRADATION LINE ===
     quality = get_quality_status()
     if quality.get('score'):
         score = quality['score']
         mode = quality.get('label', 'STANDARD')
-        emoji = quality.get('emoji', '🟡')
+        # emoji removed for cleaner display
         timing_ratio = quality.get('timing_ratio', 1.0)
         variance_ratio = quality.get('variance_ratio', 1.0)
         trend = quality.get('trend_label', 'stable')
-        trend_emoji = quality.get('trend_emoji', '→')
+        trend_arrow = quality.get('trend_label', 'stable')[:1]  # Use first letter: s/i/d
         
         # Color based on mode
         mode_colors = {'PREMIUM': GREEN, 'STANDARD': YELLOW, 'DEGRADED': RED}
@@ -772,7 +923,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
             var_explain = f"{GREEN}normal{RESET}"
         
         # Build quality line with quantization detection
-        quality_line = f"Quality: {emoji}{mode_color}{mode}{RESET} ({score}/100)"
+        quality_line = f"Quality: {mode_color}{mode}{RESET} ({score}/100)"
         
         # Quantization indicator
         quant_detected = quality.get('quant_detected', False)
@@ -782,7 +933,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         if quant_detected:
             # Quantization detected - show warning
             quant_color = RED if quant_type in ['INT4', 'INT4-GPTQ'] else YELLOW
-            quality_line += f"  |  {quant_color}⚠ QUANT: {quant_type}{RESET} ({quant_conf}%)"
+            quality_line += f"  |  {quant_color}QUANT: {quant_type}{RESET} ({quant_conf}%)"
         elif quant_type == 'INT8?':
             # Uncertain
             quality_line += f"  |  {YELLOW}? {quant_type}{RESET} ({quant_conf}%)"
@@ -792,7 +943,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         
         quality_line += f"  |  ITT: {timing_ratio:.1f}x ({timing_explain})"
         quality_line += f"  |  Var: {variance_ratio:.1f}x ({var_explain})"
-        quality_line += f"  |  {trend_emoji}{trend}"
+        quality_line += f"  |  {trend}"
         lines.append(quality_line)
         
         # Show quantization evidence if detected
@@ -805,7 +956,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         explanations = quality.get('explanation', [])
         if mode == 'DEGRADED' and explanations:
             concerns = ", ".join(explanations[:3])
-            lines.append(f"{RED}⚠ Quality concerns: {concerns}{RESET}")
+            lines.append(f"{RED}Quality concerns: {concerns}{RESET}")
 
     return "\n".join(lines)
 def select_format() -> str:
@@ -877,8 +1028,8 @@ def format_statusline(context: dict) -> str:
         if model_name:
             name, ver, date = get_model_info(model_name)
             model_short = f"{name} {ver}" if ver else name
-            return f"{DIM}❓ No fingerprint{RESET} │ {CYAN}{model_short}{RESET} │ {DIM}Run mitmproxy to collect data{RESET}"
-        return f"{DIM}❓ No fingerprint data │ Run mitmproxy to collect{RESET}"
+            return f"{DIM}No fingerprint{RESET} │ {CYAN}{model_short}{RESET} │ {DIM}Run mitmproxy to collect data{RESET}"
+        return f"{DIM}No fingerprint data │ Run mitmproxy to collect{RESET}"
 
     # Select format based on terminal width or FINGERPRINT_DISPLAY env var
     selected_format = select_format()
