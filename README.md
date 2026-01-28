@@ -526,7 +526,7 @@ MIT License - Use freely for consumer protection and research purposes.
 
 ## CONTACT
 
-- GitHub Issues: [claude-thinking-audit](https://github.com/anthropics/claude-thinking-audit/issues)
+- GitHub Issues: [[claude-thinking-audit](https://github.com/anthropics/claude-thinking-audit/issues)](https://github.com/anthropics/claude-code/issues/20350)
 - Related Discussion: [anthropics/claude-code#19098](https://github.com/anthropics/claude-code/issues/19098)
 
 ---
