@@ -34,6 +34,7 @@ BLOCK_NON_OPUS=1 FORCE_THINKING_BUDGET=31999 mitmdump -s mitm_itt_addon.py -p 18
 | **Backend Hardware** | Trainium/TPU/GPU classification with confidence % |
 | **Subagent Delegation** | How many calls secretly go to Haiku (spoiler: 99%) |
 | **UI vs API Mismatch** | Claude Code shows 83% context, API shows 5% |
+| **Rate Limit Quota** | Real-time 5h/7d utilization, reset countdown, throttle status |
 
 ### 📊 TWO DISPLAY OPTIONS
 
@@ -48,6 +49,7 @@ Model: Opus4.5-Nov25 (direct)  |  Hardware: Google TPU (72%)
 ITT: 37ms ±86ms  |  Speed: 113 tokens/sec  |  TTFT: 2.8s
 Thinking: 🔴Maximum (31k budget, 8% used)  |  Cache: 100%
 Quality: 🟡STANDARD (55/100)  |  ⚠ QUANT: INT8 (57%)  |  ITT: 0.8x baseline
+Quota: 5h ████░░░░░░ 40.0% (2.3h)  |  7d █░░░░░░░░░ 10.0% (5.2d)  |  ✓ allowed  |  Bind: 5h
 ```
 
 **Terminal Monitor Output:**
@@ -309,6 +311,86 @@ Backend Switches: 74
 
 74 backend switches in 140 calls indicates dynamic routing, potentially for load balancing or cost optimization.
 
+
+### Discovery #7: Undocumented Rate Limit Headers (NEW - Jan 30 2026)
+
+**Credit: [nsanden/claude-rate-monitor](https://github.com/nsanden/claude-rate-monitor)** — Thank you to Nate Sanden (Sanden Solutions) for reverse-engineering how Claude CLI's `/usage` command works internally. His discovery revealed 12 undocumented rate limit headers that Anthropic returns on every API response.
+
+We integrated this into our mitmproxy addon, which means **we capture rate limit data on every real API call for free — zero additional API costs**. nsanden's standalone tool makes a separate probe call (~$0.001 each). Our mitmproxy approach gets the same data passively from traffic that's already flowing through the proxy.
+
+#### The Headers (Undocumented)
+
+Anthropic's API returns these headers when the request includes an OAuth token with `anthropic-beta: oauth-2025-04-20`:
+
+| Header | Description |
+|--------|-------------|
+| `anthropic-ratelimit-unified-5h-utilization` | Session usage (0.0 to 1.0+) over rolling 5-hour window |
+| `anthropic-ratelimit-unified-7d-utilization` | Weekly usage (0.0 to 1.0+) over rolling 7-day window |
+| `anthropic-ratelimit-unified-5h-status` | `allowed`, `warning`, or `rate_limited` |
+| `anthropic-ratelimit-unified-7d-status` | Same for weekly window |
+| `anthropic-ratelimit-unified-representative-claim` | Which window is the binding constraint (`five_hour` or `seven_day`) |
+| `anthropic-ratelimit-unified-fallback-percentage` | Throughput fraction when rate-limited (e.g., 0.5 = 50%) |
+| `anthropic-ratelimit-unified-overage-status` | Whether overage billing is active |
+
+Plus reset timestamps (`5h-reset`, `7d-reset`) as Unix epoch seconds.
+
+#### Statusline Integration
+
+The quota data appears as a new line in the EXPANDED statusline:
+
+```
+Quota: 5h ████░░░░░░ 40.0% (2.3h)  |  7d █░░░░░░░░░ 10.0% (5.2d)  |  ✓ allowed  |  Bind: 5h
+```
+
+| Element | Meaning |
+|---------|---------|
+| `5h ████░░░░░░ 40.0%` | 5-hour rolling session usage with progress bar |
+| `(2.3h)` | Time until this window resets |
+| `7d █░░░░░░░░░ 10.0%` | 7-day rolling weekly usage |
+| `(5.2d)` | Time until weekly reset |
+| `✓ allowed` | Current status (green=allowed, yellow=warning, red=rate_limited) |
+| `Bind: 5h` | Which window will throttle you first |
+
+Color coding:
+- **Green** (0-30%) — Plenty of headroom
+- **Yellow** (30-60%) — Moderate usage
+- **Red** (60-80%) — Approaching limit, watch for backend routing changes
+- **Bold Red** (80%+) — Near throttle, expect degradation
+- **🛑 RATE LIMITED** — Throttled to fallback % (typically 50% throughput)
+
+In COMPACT format: `5h:40% 7d:10%`
+In FULL format: `Quota 5h:40.0% 7d:10.0% Bind:5h`
+
+#### Why This Matters
+
+1. **Rate limit → backend routing correlation**: When utilization is high, does Anthropic route you to cheaper backends? We can now test this by correlating rate limit % with ITT/backend classification data.
+
+2. **ITT anomaly disambiguation**: When ITT spikes, is it a backend issue or rate throttling? Low utilization + high ITT = backend problem. High utilization + high ITT = rate limit effect.
+
+3. **Predictive warnings**: The reset timestamps let us predict when throttling will hit. "At current pace, you'll be rate-limited in ~45 minutes."
+
+4. **Fallback percentage**: When rate-limited, you don't get cut off — you get 50% throughput. This means rate-limited ITT should be ~2x normal.
+
+#### Zero Cost Integration
+
+Because our mitmproxy addon already intercepts every API response, we get rate limit headers **for free on every real request**. No separate API calls needed. No additional tokens consumed. The data was always there — we just weren't reading it.
+
+```sql
+-- Check your rate limit history
+sqlite3 ~/.claude/fingerprint.db "
+SELECT timestamp,
+       rl_5h_utilization * 100 as session_pct,
+       rl_7d_utilization * 100 as weekly_pct,
+       rl_overall_status,
+       rl_binding_window,
+       classified_backend,
+       itt_mean_ms
+FROM samples
+WHERE rl_5h_utilization IS NOT NULL
+ORDER BY timestamp DESC LIMIT 20;
+"
+```
+
 ### Discovery #6: "Precise Instructions" Blame-Shifting
 
 Anthropic's guidance that "Claude works best with precise instructions" shifts cognitive burden to users:
@@ -373,7 +455,21 @@ Compares current metrics against 24-hour baseline:
 
 Combined with behavioral fingerprinting (VERIFIER vs COMPLETER patterns).
 
-### 7. Full Metrics (45+ fields per sample)
+### 7. Rate Limit Tracking (NEW)
+
+Captures undocumented Anthropic rate limit headers on every API response:
+- **5-hour session utilization** and reset timestamp
+- **7-day weekly utilization** and reset timestamp
+- **Overall status** (allowed/warning/rate_limited)
+- **Binding window** (which limit will throttle you first)
+- **Fallback percentage** (throughput when rate-limited: typically 50%)
+- **Overage status** (whether overage billing is active)
+
+Zero additional API cost — captured passively via mitmproxy from existing traffic.
+
+Credit: [nsanden/claude-rate-monitor](https://github.com/nsanden/claude-rate-monitor) for discovering these headers.
+
+### 8. Full Metrics (55+ fields per sample)
 
 - ITT percentiles (p50, p90, p99)
 - Cache efficiency (read/creation tokens)
@@ -419,6 +515,7 @@ Rather than accept opaque "automatic thinking allocation" that users cannot veri
 | Jan 23, 2026 | **This tool released** |
 | Jan 24, 2026 | [**Bug Report #20350**](https://github.com/anthropics/claude-code/issues/20350) filed with evidence |
 | Jan 26, 2026 | **v3.4 Released** - Quantization detection, terminal monitor, optional statusline |
+| Jan 30, 2026 | **v3.5 Released** - Rate limit quota tracking via undocumented headers (credit: nsanden/claude-rate-monitor) |
 
 ### Related GitHub Issues
 

@@ -373,6 +373,17 @@ def migrate_schema():
         ("session_stats", "timing_ratio", "REAL DEFAULT 1.0"),
         ("session_stats", "variance_ratio", "REAL DEFAULT 1.0"),
         ("session_stats", "quality_trend", "TEXT DEFAULT 'stable'"),
+        # Rate limit columns (from nsanden/claude-rate-monitor discovery)
+        ("samples", "rl_5h_utilization", "REAL DEFAULT NULL"),
+        ("samples", "rl_5h_reset", "INTEGER DEFAULT NULL"),
+        ("samples", "rl_5h_status", "TEXT DEFAULT NULL"),
+        ("samples", "rl_7d_utilization", "REAL DEFAULT NULL"),
+        ("samples", "rl_7d_reset", "INTEGER DEFAULT NULL"),
+        ("samples", "rl_7d_status", "TEXT DEFAULT NULL"),
+        ("samples", "rl_overall_status", "TEXT DEFAULT NULL"),
+        ("samples", "rl_binding_window", "TEXT DEFAULT NULL"),
+        ("samples", "rl_fallback_pct", "REAL DEFAULT NULL"),
+        ("samples", "rl_overage_status", "TEXT DEFAULT NULL"),
     ]
 
     with get_db() as conn:
@@ -635,12 +646,16 @@ class FingerprintDatabase:
                     model, num_tokens, response_model, has_thinking,
                     routing_state, cf_edge_location, speculative_decoding, speculative_type,
                     context_api_tokens, context_api_pct, context_cc_pct, context_mismatch,
-                    backend_evidence
+                    backend_evidence,
+                    rl_5h_utilization, rl_5h_reset, rl_5h_status,
+                    rl_7d_utilization, rl_7d_reset, rl_7d_status,
+                    rl_overall_status, rl_binding_window, rl_fallback_pct, rl_overage_status
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
             """, (
                 sample.get("timestamp", datetime.utcnow().isoformat()),
@@ -704,6 +719,17 @@ class FingerprintDatabase:
                 sample.get("context_cc_pct", 0),
                 sample.get("context_mismatch", 0),
                 sample.get("backend_evidence"),
+                # Rate limit data
+                sample.get("rl_5h_utilization"),
+                sample.get("rl_5h_reset"),
+                sample.get("rl_5h_status"),
+                sample.get("rl_7d_utilization"),
+                sample.get("rl_7d_reset"),
+                sample.get("rl_7d_status"),
+                sample.get("rl_overall_status"),
+                sample.get("rl_binding_window"),
+                sample.get("rl_fallback_pct"),
+                sample.get("rl_overage_status"),
             ))
 
             # Update model stats
@@ -1024,6 +1050,18 @@ class FingerprintDatabase:
                 "request_id": row_dict.get("request_id"),
                 "cf_ray": row_dict.get("cf_ray"),
                 "has_tool_use": row_dict.get("has_tool_use", 0),
+
+                # Rate limit
+                "rl_5h_utilization": row_dict.get("rl_5h_utilization"),
+                "rl_5h_reset": row_dict.get("rl_5h_reset"),
+                "rl_5h_status": row_dict.get("rl_5h_status"),
+                "rl_7d_utilization": row_dict.get("rl_7d_utilization"),
+                "rl_7d_reset": row_dict.get("rl_7d_reset"),
+                "rl_7d_status": row_dict.get("rl_7d_status"),
+                "rl_overall_status": row_dict.get("rl_overall_status"),
+                "rl_binding_window": row_dict.get("rl_binding_window"),
+                "rl_fallback_pct": row_dict.get("rl_fallback_pct"),
+                "rl_overage_status": row_dict.get("rl_overage_status"),
 
                 # Legacy
                 "model": row_dict.get("model", row_dict.get("model_requested", "unknown")),

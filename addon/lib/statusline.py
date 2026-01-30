@@ -520,6 +520,12 @@ def format_statusline_compact(context: dict, fp: dict, extras: dict) -> str:
             anom_parts.append(f"{direction}{metric}")
         parts.append(" ".join(anom_parts))
 
+    # === Rate limit (abbreviated) ===
+    rl_5h = fp.get("rl_5h_utilization")
+    rl_7d = fp.get("rl_7d_utilization")
+    if rl_5h is not None and rl_5h > 0:
+        parts.append(f"5h:{rl_5h*100:.0f}% 7d:{(rl_7d or 0)*100:.0f}%")
+
     # Use pipe separator per plan: " | " not " │ "
     return " | ".join(parts)
 
@@ -618,6 +624,14 @@ def format_statusline_full(context: dict, fp: dict, extras: dict) -> str:
             metric = a.get("metric", "?")[:3].upper()
             anom_parts.append(f"{direction}{metric}")
         parts.append(" ".join(anom_parts))
+
+    # === Rate limit (full abbreviated) ===
+    rl_5h = fp.get("rl_5h_utilization")
+    rl_7d = fp.get("rl_7d_utilization")
+    if rl_5h is not None and rl_5h > 0:
+        rl_bind = fp.get("rl_binding_window", "")
+        bind_str = "5h" if "five" in (rl_bind or "") else "7d" if "seven" in (rl_bind or "") else "?"
+        parts.append(f"Quota 5h:{rl_5h*100:.1f}% 7d:{(rl_7d or 0)*100:.1f}% Bind:{bind_str}")
 
     # Use pipe separator per plan: " | "
     return " | ".join(parts)
@@ -890,6 +904,67 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         syco_line += f"  |  Whisper: {whisper_color}{whisper_str}{RESET}"
         
         lines.append(syco_line)
+
+    # === QUOTA / RATE LIMIT LINE ===
+    rl_5h = fp.get("rl_5h_utilization")
+    rl_7d = fp.get("rl_7d_utilization")
+    if rl_5h is not None and rl_5h > 0:
+        rl_5h_reset = fp.get("rl_5h_reset", 0) or 0
+        rl_7d_reset = fp.get("rl_7d_reset", 0) or 0
+        rl_status = fp.get("rl_overall_status", "")
+        rl_bind = fp.get("rl_binding_window", "")
+        rl_fallback = fp.get("rl_fallback_pct", 0) or 0
+        rl_overage = fp.get("rl_overage_status", "")
+
+        def _quota_bar(ratio, width=10):
+            filled = int(min(ratio, 1.0) * width)
+            return "\u2588" * filled + "\u2591" * (width - filled)
+
+        def _quota_color(ratio):
+            if ratio >= 0.8: return RED + BOLD
+            if ratio >= 0.6: return RED
+            if ratio >= 0.3: return YELLOW
+            return GREEN
+
+        def _reset_countdown(epoch):
+            if not epoch or epoch == 0:
+                return "?"
+            import time as _t
+            diff = epoch - _t.time()
+            if diff <= 0:
+                return "reset"
+            if diff < 3600:
+                return f"{diff/60:.0f}m"
+            if diff < 86400:
+                return f"{diff/3600:.1f}h"
+            return f"{diff/86400:.1f}d"
+
+        rl_5h_pct = (rl_5h or 0) * 100
+        rl_7d_pct = (rl_7d or 0) * 100
+
+        c5 = _quota_color(rl_5h or 0)
+        c7 = _quota_color(rl_7d or 0)
+
+        # Status indicator
+        if rl_status == "rate_limited":
+            status_str = f"{RED}{BOLD}\U0001f6d1 RATE LIMITED{RESET}"
+            if rl_fallback:
+                status_str += f" ({rl_fallback*100:.0f}% throughput)"
+        elif rl_status == "warning":
+            status_str = f"{YELLOW}\u26a0 warning{RESET}"
+        else:
+            status_str = f"{GREEN}\u2713 {rl_status}{RESET}"
+
+        # Binding window
+        bind_str = "5h" if "five" in (rl_bind or "") else "7d" if "seven" in (rl_bind or "") else rl_bind or "?"
+
+        quota_line = (
+            f"Quota: 5h {c5}{_quota_bar(rl_5h or 0)}{RESET} {rl_5h_pct:.1f}% ({_reset_countdown(rl_5h_reset)})"
+            f"  |  7d {c7}{_quota_bar(rl_7d or 0)}{RESET} {rl_7d_pct:.1f}% ({_reset_countdown(rl_7d_reset)})"
+            f"  |  {status_str}"
+            f"  |  Bind: {CYAN}{bind_str}{RESET}"
+        )
+        lines.append(quota_line)
 
     # === QUALITY/DEGRADATION LINE ===
     quality = get_quality_status()
