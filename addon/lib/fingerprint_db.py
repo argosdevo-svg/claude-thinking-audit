@@ -384,6 +384,9 @@ def migrate_schema():
         ("samples", "rl_binding_window", "TEXT DEFAULT NULL"),
         ("samples", "rl_fallback_pct", "REAL DEFAULT NULL"),
         ("samples", "rl_overage_status", "TEXT DEFAULT NULL"),
+        # Phase 1 fixes: persist stop_reason and thinking_tokens_used
+        ("samples", "stop_reason", "TEXT"),
+        ("samples", "thinking_tokens_used", "INTEGER DEFAULT 0"),
     ]
 
     with get_db() as conn:
@@ -602,16 +605,16 @@ class FingerprintDatabase:
 
     def add_sample(self, sample: dict) -> Tuple[str, float]:
         """Add a new comprehensive sample"""
-        # Classify if not already done
+        # Always compute evidence for storage
+        backend, confidence, evidence = self.classify_backend(
+            sample.get("itt_mean_ms", 0),
+            sample.get("tokens_per_sec", 0),
+            sample.get("variance_coef", 0)
+        )
         if not sample.get("classified_backend"):
-            backend, confidence, evidence = self.classify_backend(
-                sample.get("itt_mean_ms", 0),
-                sample.get("tokens_per_sec", 0),
-                sample.get("variance_coef", 0)
-            )
             sample["classified_backend"] = backend
             sample["confidence"] = confidence
-            sample["backend_evidence"] = json.dumps(evidence) if evidence else None
+        sample["backend_evidence"] = json.dumps(evidence) if evidence else None
 
         # Fill legacy fields for compatibility
         if not sample.get("model"):
@@ -631,7 +634,7 @@ class FingerprintDatabase:
                     model_response, model_response_version,
                     model_match, model_ui_selected, ui_api_mismatch, is_subagent, subagent_type,
                     thinking_enabled, thinking_budget_requested, thinking_budget_tier,
-                    thinking_chunk_count, thinking_utilization, thinking_duration_ms,
+                    thinking_chunk_count, thinking_utilization, thinking_tokens_used, thinking_duration_ms,
                     thinking_itt_mean_ms, thinking_itt_std_ms,
                     text_chunk_count, text_duration_ms,
                     text_itt_mean_ms, text_itt_std_ms,
@@ -642,7 +645,7 @@ class FingerprintDatabase:
                     itt_p50_ms, itt_p90_ms, itt_p99_ms,
                     variance_coef, tokens_per_sec, num_chunks,
                     classified_backend, confidence, location,
-                    request_id, cf_ray, has_tool_use,
+                    request_id, cf_ray, stop_reason, has_tool_use,
                     model, num_tokens, response_model, has_thinking,
                     routing_state, cf_edge_location, speculative_decoding, speculative_type,
                     context_api_tokens, context_api_pct, context_cc_pct, context_mismatch,
@@ -651,8 +654,8 @@ class FingerprintDatabase:
                     rl_7d_utilization, rl_7d_reset, rl_7d_status,
                     rl_overall_status, rl_binding_window, rl_fallback_pct, rl_overage_status
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
@@ -674,6 +677,7 @@ class FingerprintDatabase:
                 sample.get("thinking_budget_tier"),
                 sample.get("thinking_chunk_count", 0),
                 sample.get("thinking_utilization", 0),
+                sample.get("thinking_tokens_used", 0),
                 sample.get("thinking_duration_ms", 0),
                 sample.get("thinking_itt_mean_ms", 0),
                 sample.get("thinking_itt_std_ms", 0),
@@ -704,6 +708,7 @@ class FingerprintDatabase:
                 sample.get("location", "unknown"),
                 sample.get("request_id"),
                 sample.get("cf_ray"),
+                sample.get("stop_reason"),
                 sample.get("has_tool_use", 0),
                 sample.get("model"),
                 sample.get("num_tokens", 0),
@@ -1007,6 +1012,7 @@ class FingerprintDatabase:
                 "thinking_tier_emoji": tier_info.get("emoji", ""),
                 "thinking_chunk_count": row_dict.get("thinking_chunk_count", 0),
                 "thinking_utilization": row_dict.get("thinking_utilization", 0),
+                "thinking_tokens_used": row_dict.get("thinking_tokens_used", 0),
                 "thinking_duration_ms": row_dict.get("thinking_duration_ms", 0),
                 "thinking_itt_mean_ms": row_dict.get("thinking_itt_mean_ms", 0),
                 "thinking_itt_std_ms": row_dict.get("thinking_itt_std_ms", 0),
@@ -1050,6 +1056,20 @@ class FingerprintDatabase:
                 "request_id": row_dict.get("request_id"),
                 "cf_ray": row_dict.get("cf_ray"),
                 "has_tool_use": row_dict.get("has_tool_use", 0),
+                "stop_reason": row_dict.get("stop_reason"),
+
+                # Infrastructure / routing
+                "envoy_upstream_time_ms": row_dict.get("envoy_upstream_time_ms", 0),
+                "cf_edge_location": row_dict.get("cf_edge_location", ""),
+                "speculative_decoding": row_dict.get("speculative_decoding", 0),
+                "speculative_type": row_dict.get("speculative_type"),
+                "model_ui_selected": row_dict.get("model_ui_selected"),
+                "ui_api_mismatch": row_dict.get("ui_api_mismatch", 0),
+                "num_chunks": row_dict.get("num_chunks", 0),
+                "backend_evidence": row_dict.get("backend_evidence"),
+                "routing_state": row_dict.get("routing_state", "DIRECT"),
+                "context_api_pct": row_dict.get("context_api_pct", 0),
+                "context_api_tokens": row_dict.get("context_api_tokens", 0),
 
                 # Rate limit
                 "rl_5h_utilization": row_dict.get("rl_5h_utilization"),
@@ -2619,7 +2639,20 @@ class FingerprintDatabase:
             return 1
 
     def _create_experiment_tables(self, conn):
-        """Create experiment tracking tables if they don't exist."""
+        """Create experiment tracking tables if they don't exist.
+        
+        experiment_phases enables A/B testing of thinking budgets, model routing,
+        and whisper injection strategies. Each phase tags samples with a phase name
+        so before/after comparisons can be made.
+        
+        Usage:
+            db.start_experiment_phase("high_budget_test")
+            # ... run session with ultra thinking ...
+            db.end_experiment_phase()
+            phase_data = db.get_current_experiment_phase()
+        
+        The experiment_phase column in samples links each API call to the active phase.
+        """
         conn.execute("""
             CREATE TABLE IF NOT EXISTS experiment_phases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2707,7 +2740,94 @@ class FingerprintDatabase:
                 data.get('user_frustration_level', 0),
                 data.get('user_frustration_trend', 'stable')
             ))
-            return cursor.lastrowid
+            sample_id = cursor.lastrowid
+
+            # Aggregate session stats
+            session_id = data.get('session_id')
+            if session_id:
+                self._update_behavioral_session_stats(conn, session_id)
+
+            return sample_id
+
+    def _update_behavioral_session_stats(self, conn, session_id: str):
+        """Aggregate behavioral_samples into behavioral_session_stats for a session.
+        
+        Called after every behavioral sample insert. Uses INSERT OR REPLACE
+        to keep the stats row current.
+        """
+        row = conn.execute("""
+            SELECT
+                AVG(verification_ratio) as avg_ver,
+                AVG(preparation_ratio) as avg_prep,
+                SUM(completion_claims) as total_claims,
+                SUM(unverified_completions) as total_unver,
+                SUM(agreement_phrases) as total_agree,
+                SUM(CASE WHEN behavioral_signature = 'VERIFIER' THEN 1 ELSE 0 END) as verifier_turns,
+                SUM(CASE WHEN behavioral_signature = 'COMPLETER' THEN 1 ELSE 0 END) as completer_turns,
+                SUM(CASE WHEN behavioral_signature = 'SYCOPHANT' THEN 1 ELSE 0 END) as sycophant_turns,
+                SUM(CASE WHEN behavioral_signature = 'THEATER' THEN 1 ELSE 0 END) as theater_turns,
+                COUNT(*) as sample_count
+            FROM behavioral_samples
+            WHERE session_id = ?
+        """, (session_id,)).fetchone()
+
+        if not row or row['sample_count'] == 0:
+            return
+
+        # Determine current signature from last 5 samples
+        recent = conn.execute("""
+            SELECT behavioral_signature, COUNT(*) as cnt
+            FROM (
+                SELECT behavioral_signature FROM behavioral_samples
+                WHERE session_id = ? AND behavioral_signature != 'unknown'
+                ORDER BY timestamp DESC LIMIT 5
+            )
+            GROUP BY behavioral_signature
+            ORDER BY cnt DESC LIMIT 1
+        """, (session_id,)).fetchone()
+
+        current_sig = recent['behavioral_signature'] if recent else 'unknown'
+
+        # Determine trend: compare last 5 vs previous 5
+        prev = conn.execute("""
+            SELECT behavioral_signature, COUNT(*) as cnt
+            FROM (
+                SELECT behavioral_signature FROM behavioral_samples
+                WHERE session_id = ? AND behavioral_signature != 'unknown'
+                ORDER BY timestamp DESC LIMIT 5 OFFSET 5
+            )
+            GROUP BY behavioral_signature
+            ORDER BY cnt DESC LIMIT 1
+        """, (session_id,)).fetchone()
+
+        if prev and prev['behavioral_signature'] != current_sig:
+            trend = f"{prev['behavioral_signature']}->{current_sig}"
+        else:
+            trend = 'stable'
+
+        conn.execute("""
+            INSERT OR REPLACE INTO behavioral_session_stats (
+                session_id, avg_verification_ratio, avg_preparation_ratio,
+                total_completion_claims, total_unverified_completions,
+                total_sycophancy_signals,
+                verifier_turns, completer_turns, sycophant_turns, theater_turns,
+                current_signature, signature_trend, last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            session_id,
+            row['avg_ver'] or 0,
+            row['avg_prep'] or 0,
+            row['total_claims'] or 0,
+            row['total_unver'] or 0,
+            row['total_agree'] or 0,
+            row['verifier_turns'] or 0,
+            row['completer_turns'] or 0,
+            row['sycophant_turns'] or 0,
+            row['theater_turns'] or 0,
+            current_sig,
+            trend,
+            datetime.now().isoformat()
+        ))
 
     def get_behavioral_signature(self, session_id: str = None, window: int = 10) -> dict:
         """Get current behavioral signature based on rolling window.

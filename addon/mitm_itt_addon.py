@@ -734,11 +734,16 @@ def response(flow: http.HTTPFlow) -> None:
         "location": location,
         "request_id": capture.request_id,
         "stop_reason": capture.stop_reason,
-        "envoy_time_ms": capture.envoy_time_ms,
+        "envoy_upstream_time_ms": capture.envoy_time_ms,
         "cf_ray": capture.cf_ray,
         "cf_edge_location": capture.cf_edge_location,
         "speculative_decoding": 1 if spec_detected else 0,
         "speculative_type": spec_type,
+        # Context tracking (per-sample)
+        "context_api_tokens": capture.input_tokens,
+        "context_api_pct": round((capture.input_tokens / 200000) * 100, 3) if capture.input_tokens > 0 else 0,
+        # Routing state
+        "routing_state": "SUBAGENT" if is_subagent else ("ROUTED" if not model_match else "DIRECT"),
         # Rate limit data
         "rl_5h_utilization": capture.rl_5h_utilization,
         "rl_5h_reset": capture.rl_5h_reset,

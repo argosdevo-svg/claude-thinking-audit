@@ -714,12 +714,36 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
     hw_name = bi.get("name", backend.title()) if bi else backend.title()
     hardware_line = f"Hardware: {conf_color}{hw_name}{RESET} ({conf:.0f}% confidence)"
 
+    # CF edge location
+    cf_edge = fp.get("cf_edge_location", "")
+    if cf_edge:
+        hardware_line += f"  |  Edge: {CYAN}{cf_edge}{RESET}"
+
     lines.append(f"{model_line}  |  {hardware_line}")
+
+    # UI/API model mismatch warning
+    ui_mismatch = fp.get("ui_api_mismatch", 0)
+    if ui_mismatch:
+        ui_model = fp.get("model_ui_selected", "?")
+        api_model = fp.get("model_requested", "?")
+        lines.append(f"{RED}WARNING: UI selected {ui_model} but API requested {api_model}{RESET}")
 
     # === LINE 2: Timing explained ===
     timing_line = f"Token Delay: {GREEN}{itt:.0f}ms{RESET} ±{itt_std:.0f}ms ({stability})"
     speed_line = f"Speed: {GREEN}{tps:.0f}{RESET} tokens/sec"
     first_token = f"First Token: {GREEN}{ttft/1000:.1f}s{RESET}"
+
+    # Envoy server-side latency
+    envoy = fp.get("envoy_upstream_time_ms", 0)
+    if envoy > 0:
+        first_token += f"  |  Server: {GREEN}{envoy:.0f}ms{RESET}"
+
+    # Stop reason warning
+    stop = fp.get("stop_reason", "")
+    if stop == "max_tokens":
+        first_token += f"  |  {RED}TRUNCATED{RESET}"
+    elif stop == "stop_sequence":
+        first_token += f"  |  {YELLOW}stop_seq{RESET}"
 
     lines.append(f"{timing_line}  |  {speed_line}  |  {first_token}")
 
@@ -729,6 +753,12 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         latency_line = f"Latency Pattern: {pattern_color}{pattern_name}{RESET} ({pattern_explain})"
         percentiles = f"Median:{p50:.0f}ms  90th:{p90:.0f}ms  99th:{p99:.0f}ms"
         lines.append(f"{latency_line}  |  {percentiles}")
+
+    # Speculative decoding indicator
+    spec = fp.get("speculative_decoding", 0)
+    if spec:
+        spec_type = fp.get("speculative_type", "UNKNOWN")
+        lines.append(f"Speculation: {YELLOW}{spec_type}{RESET} detected (burst pattern in ITT)")
 
     # === LINE 4: Thinking budget ===
     tier_name = {"ultra": "Maximum", "enhanced": "Extended", "basic": "Standard", "none": "Disabled"}.get(tier, tier)
@@ -740,6 +770,16 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
     cache_line = f"Cache: {cache_color}{cache_this:.0f}%{RESET} this call, {cache_sess:.0f}% session avg"
 
     lines.append(f"{think_line}  |  {cache_line}")
+
+    # Phase duration breakdown + thinking tokens
+    think_dur = fp.get("thinking_duration_ms", 0)
+    text_dur = fp.get("text_duration_ms", 0)
+    if think_dur > 0 or text_dur > 0:
+        phase_line = f"Phase Duration: Think {GREEN}{think_dur/1000:.1f}s{RESET}  |  Text {GREEN}{text_dur/1000:.1f}s{RESET}"
+        think_tok = fp.get("thinking_tokens_used", 0)
+        if think_tok > 0:
+            phase_line += f"  |  Think Tokens: {GREEN}{think_tok:,}{RESET}"
+        lines.append(phase_line)
 
     # === LINE 5: Context usage with bar ===
     def _ctx_bar(pct, width=10):
