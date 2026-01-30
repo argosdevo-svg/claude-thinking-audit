@@ -742,7 +742,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
     lines.append(f"{think_line}  |  {cache_line}")
 
     # === LINE 5: Context usage with bar ===
-    def _ctx_bar(pct, width=20):
+    def _ctx_bar(pct, width=10):
         ratio = min(pct / 100.0, 1.0) if pct > 0 else 0
         filled = int(ratio * width)
         if ratio > 0 and filled == 0:
@@ -750,8 +750,8 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         empty = width - filled
         return "\u2588" * filled + "\u2591" * empty
 
-    ctx_color = GREEN if ctx_api < 50 else YELLOW if ctx_api < 80 else RED
-    cc_color = GREEN if ctx_cc < 50 else YELLOW if ctx_cc < 80 else RED
+    ctx_color = GREEN if ctx_api < 70 else YELLOW if ctx_api < 90 else RED
+    cc_color = GREEN if ctx_cc < 70 else YELLOW if ctx_cc < 90 else RED
     ctx_line = (
         f"Context: API {ctx_color}{BOLD}{_ctx_bar(ctx_api)}{RESET} {ctx_color}{ctx_api:.0f}%{RESET}"
         f"  |  CC {cc_color}{BOLD}{_ctx_bar(ctx_cc)}{RESET} {cc_color}{ctx_cc:.0f}%{RESET}"
@@ -930,7 +930,7 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         rl_fallback = fp.get("rl_fallback_pct", 0) or 0
         rl_overage = fp.get("rl_overage_status", "")
 
-        def _quota_bar(ratio, width=20):
+        def _quota_bar(ratio, width=10):
             clamped = min(ratio, 1.0)
             filled = int(clamped * width)
             if clamped > 0 and filled == 0:
