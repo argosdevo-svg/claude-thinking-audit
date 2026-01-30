@@ -311,10 +311,21 @@ Backend Switches: 74
 
 74 backend switches in 140 calls indicates dynamic routing, potentially for load balancing or cost optimization.
 
+### Discovery #6: "Precise Instructions" Blame-Shifting
+
+Anthropic's guidance that "Claude works best with precise instructions" shifts cognitive burden to users:
+
+- **Nov 2025**: Ultrathink controls removed, thinking made "automatic"
+- **Jan 2026**: Users report noticeable degradation
+- **Anthropic's response**: "Use precise instructions" (i.e., do the model's reasoning work for it)
+
+See `PRECISE_INSTRUCTIONS_ANALYSIS.md` for full analysis.
+
+---
 
 ### Discovery #7: Undocumented Rate Limit Headers (NEW - Jan 30 2026)
 
-**Credit: [nsanden/claude-rate-monitor](https://github.com/nsanden/claude-rate-monitor)** — Thank you to Nate Sanden (Sanden Solutions) for reverse-engineering how Claude CLI's `/usage` command works internally. His discovery revealed 12 undocumented rate limit headers that Anthropic returns on every API response.
+**Credit: [nsanden/claude-rate-monitor](https://github.com/nsanden/claude-rate-monitor)** — Thank you to @nsanden (Sanden Solutions) for reverse-engineering how Claude CLI's `/usage` command works internally. His discovery revealed 12 undocumented rate limit headers that Anthropic returns on every API response.
 
 We integrated this into our mitmproxy addon, which means **we capture rate limit data on every real API call for free — zero additional API costs**. nsanden's standalone tool makes a separate probe call (~$0.001 each). Our mitmproxy approach gets the same data passively from traffic that's already flowing through the proxy.
 
@@ -391,17 +402,6 @@ ORDER BY timestamp DESC LIMIT 20;
 "
 ```
 
-### Discovery #6: "Precise Instructions" Blame-Shifting
-
-Anthropic's guidance that "Claude works best with precise instructions" shifts cognitive burden to users:
-
-- **Nov 2025**: Ultrathink controls removed, thinking made "automatic"
-- **Jan 2026**: Users report noticeable degradation
-- **Anthropic's response**: "Use precise instructions" (i.e., do the model's reasoning work for it)
-
-See `PRECISE_INSTRUCTIONS_ANALYSIS.md` for full analysis.
-
----
 
 ## WHAT THIS TOOL MEASURES (Technical Details)
 
