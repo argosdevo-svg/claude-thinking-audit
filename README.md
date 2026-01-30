@@ -591,6 +591,157 @@ The tool uses `output_tokens` from API response (not chunk estimation). ITT fing
 
 ---
 
+## CLAUDE CODE HOOKS
+
+The `hooks/` directory contains Claude Code hooks that enforce behavioral guardrails and track patterns in real-time. These are installed into `~/.claude/hooks/` (or referenced from `~/.claude/settings.json`) and run automatically on every prompt or tool call.
+
+### Hook Overview
+
+| Hook | Trigger | Purpose |
+|------|---------|---------|
+| `behavioral_intervention.py` | `UserPromptSubmit` | Injects corrective `<system-reminder>` based on detected behavioral patterns |
+| `behavioral_tracker.py` | `PostToolUse` | Tracks tool usage patterns (read/edit/write ratios) per session |
+| `force_opus_task.py` | `PreToolUse` (Task) | Blocks Haiku/Sonnet subagent calls, forces retry as Opus |
+| `force_sequential.py` | `UserPromptSubmit` | When `/think` skill is active, injects sequential-thinking requirement |
+| `file_approval.py` | `PreToolUse` | Blocks writes to sensitive paths and dangerous commands |
+
+### `behavioral_intervention.py` — Sycophancy Intervention
+
+Runs on every user prompt. Reads the behavioral signature from `fingerprint.db` and injects escalating corrections:
+
+| Signature | Confidence | Injection |
+|-----------|------------|-----------|
+| `VERIFIER` | any | None (good behavior) |
+| `COMPLETER` | >50% | "Show actual command output before claiming done" |
+| `SYCOPHANT` | >50% | "Verify the claim is correct before agreeing" |
+| `THEATER` | >50% | "Stop preparing and start executing" |
+
+Escalation levels: `gentle` → `warning` → `protocol` → `halt` (based on offense count per session). Uses the `realignment` module (v2) with RLHF-inspired dynamics when available, falls back to static templates (v1).
+
+### `behavioral_tracker.py` — Tool Pattern Tracking
+
+Runs after every tool call. Tracks per-session:
+
+| Metric | Formula | Meaning |
+|--------|---------|---------|
+| `verification_ratio` | `(read + grep + glob) / (edit + write)` | >0.7 = verifies before changing |
+| `preparation_ratio` | `(read + todo) / (edit + bash)` | High = research-first; low = act-first |
+
+Records behavioral samples to `fingerprint.db` every 5 tool calls. Session-isolated via `behavioral_state_{session_id}.json`.
+
+### `force_opus_task.py` — Opus-Only Enforcement
+
+Blocks any `Task` tool call requesting `model="haiku"` or `model="sonnet"`. Returns a structured block message with the exact retry call using `model="opus"`. This is **Layer 2** of three-layer enforcement:
+
+1. **CLAUDE.md instruction** — tells Claude to always use `model="opus"` (prevention)
+2. **This hook** — blocks non-opus and provides retry template (first safety net)
+3. **Proxy `BLOCK_NON_OPUS=1`** — returns 403 at network level (final safety net)
+
+### `force_sequential.py` — Sequential Thinking Toggle
+
+Activated by the `/think` skill. When enabled, injects a `<system-reminder>` on every prompt requiring Claude to use the `mcp__sequential-thinking__sequentialthinking` tool. Disabled by `/unthink`.
+
+### `file_approval.py` — Sensitive Path Protection
+
+Blocks file operations targeting system directories (`/etc`, `/usr`, `/var`, `/boot`, `/root`), security directories (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`), and credential files (`*.pem`, `*.key`, `.env`, `secrets*`, `id_rsa*`). Also blocks dangerous bash commands (recursive deletes, force push, world-writable permissions, disk writes, piped curl/wget). Read-only tools (`Read`, `Glob`, `Grep`) are whitelisted.
+
+---
+
+## EXPANDED STATUSLINE — FIELD REFERENCE
+
+The EXPANDED statusline (default) outputs up to 12 lines after every Claude API response. Here is what each line means:
+
+### Line 1: Model & Hardware
+```
+Model: Opus4.5-Nov25 (direct)  |  Hardware: Google TPU (72% confidence)
+```
+- **Model ID**: Extracted from API response `model` field
+- **`(direct)`**: Direct API call vs `(subagent)` for delegated calls
+- **Hardware**: Backend classified from ITT fingerprint with confidence %
+
+### Line 2: Timing Metrics
+```
+Token Delay: 37ms ±86ms (stable)  |  Speed: 113 tokens/sec  |  First Token: 2.8s
+```
+- **Token Delay**: Mean inter-token time (ITT) ± standard deviation
+- **`(stable/unstable)`**: Whether variance is within normal range
+- **Speed**: Tokens per second (TPS)
+- **First Token**: Time to first token (TTFT) — includes thinking time
+
+### Line 3: Latency Pattern
+```
+Latency Pattern: TPU (tight distribution = TPU hardware)  |  Median:25ms  90th:45ms  99th:120ms
+```
+ITT percentile distribution. Tight = TPU, moderate = GPU, wide = Trainium.
+
+### Line 4: Thinking Budget
+```
+Thinking: Maximum (31k budget, 8% used)  |  Cache: 100% this call, 100% session avg
+```
+- **Maximum/Standard/None**: Thinking mode classification
+- **`31k budget, 8% used`**: Requested budget vs actual utilization
+- **Cache**: Prompt cache hit rate (100% = all previous turns cached server-side)
+
+### Line 5: Phase Duration
+```
+Phase Duration: Think 1.2s  |  Text 3.4s  |  Think Tokens: 450
+```
+Time spent in thinking phase vs text output phase, plus thinking token count.
+
+### Line 6: Context Usage
+```
+Context: True ████████░░ 85%  |  CC ████░░░░░░ 45%  |  mismatch!  |  ~72 calls left
+```
+- **True %**: Real context usage — `(cache_read + cache_create + input_tokens) / 200,000`
+- **CC %**: Claude Code's reported context percentage (often lower)
+- **`mismatch!`**: Shown when True and CC differ by >10%
+- **`~N calls left`**: Estimated remaining API calls based on per-call token growth
+
+### Line 7: Session Stats
+```
+Session: 140 API calls  |  Backends Seen: Trn:23, GPU:30, TPU:87  |  Switches: 74
+```
+Total API calls, backend hardware distribution, and backend switch count.
+
+### Line 8: Subagent Delegation
+```
+Subagent Calls: 898 total (Haiku:896, Sonnet:0) (last: 2m ago)
+```
+Task calls delegated to cheaper models. If you pay for Opus and see `Haiku:896`, those ran on the cheap model.
+
+### Line 9: Behavioral Signature
+```
+Behavior: VERIFIER (95%) - evidence before claims  |  Verification: 84%
+```
+- **VERIFIER/COMPLETER/SYCOPHANT/THEATER**: Detected behavioral pattern with confidence
+- **Verification**: Ratio of read/grep calls before edit/write calls
+
+### Line 10: Sycophancy Detection
+```
+Sycophancy: 10% (structural)  |  Divergence: 0.00  |  Signals: 1  |  Whisper: none
+```
+- **Score**: Sycophancy percentage and dominant signal type
+- **Divergence**: Think-vs-output divergence (thinks X, says Y)
+- **Signals**: Number of sycophancy signals detected
+- **Whisper**: Current correction injection level (none/gentle/warning/protocol/halt)
+
+### Line 11: Rate Limit Quota
+```
+Quota: 5h ████░░░░░░ 40.0% (2.3h)  |  7d █░░░░░░░░░ 10.0% (5.2d)  |  ✓ allowed  |  Bind: 5h
+```
+See [Discovery #7](#discovery-7-undocumented-rate-limit-headers-new---jan-30-2026) for full explanation.
+
+### Line 12: Quality / Quantization
+```
+Quality: PREMIUM (95/100)  |  FP16 (no quant)  |  ITT: 1.0x (normal)  |  Var: 0.9x (normal)
+```
+- **PREMIUM/STANDARD/DEGRADED**: Quality score (>80 / 50-80 / <50)
+- **FP16/INT8/INT4**: Detected quantization level
+- **ITT ratio**: Current ITT vs 24h baseline. <1.0 = faster = possible quantization
+- **Var ratio**: Current variance vs baseline. >1.0 = more variable = possible quantization
+
+---
+
 ## FILES IN THIS REPOSITORY
 
 | File | Purpose |
@@ -603,6 +754,11 @@ The tool uses `output_tokens` from API response (not chunk estimation). ITT fing
 | `PRECISE_INSTRUCTIONS_ANALYSIS.md` | "Precise instructions" blame-shifting analysis |
 | `DISPLAY_OPTIONS.md` | Statusline vs terminal monitor docs |
 | `ARXIV_PAPER.md` | Research paper draft |
+| `hooks/behavioral_intervention.py` | Sycophancy intervention hook (UserPromptSubmit) |
+| `hooks/behavioral_tracker.py` | Tool pattern tracking hook (PostToolUse) |
+| `hooks/force_opus_task.py` | Opus-only subagent enforcement hook (PreToolUse) |
+| `hooks/force_sequential.py` | Sequential thinking toggle hook (UserPromptSubmit) |
+| `hooks/file_approval.py` | Sensitive path protection hook (PreToolUse) |
 
 ---
 
