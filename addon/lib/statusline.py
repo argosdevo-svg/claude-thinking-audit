@@ -741,9 +741,23 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
 
     lines.append(f"{think_line}  |  {cache_line}")
 
-    # === LINE 5: Context usage ===
+    # === LINE 5: Context usage with bar ===
+    def _ctx_bar(pct, width=20):
+        ratio = min(pct / 100.0, 1.0) if pct > 0 else 0
+        filled = int(ratio * width)
+        if ratio > 0 and filled == 0:
+            filled = 1
+        empty = width - filled
+        return "\u2588" * filled + "\u2591" * empty
+
     ctx_color = GREEN if ctx_api < 50 else YELLOW if ctx_api < 80 else RED
-    ctx_line = f"Context Used: {ctx_color}{ctx_api:.0f}%{RESET} of limit (Claude Code shows {ctx_cc:.0f}%)"
+    cc_color = GREEN if ctx_cc < 50 else YELLOW if ctx_cc < 80 else RED
+    ctx_line = (
+        f"Context: API {ctx_color}{BOLD}{_ctx_bar(ctx_api)}{RESET} {ctx_color}{ctx_api:.0f}%{RESET}"
+        f"  |  CC {cc_color}{BOLD}{_ctx_bar(ctx_cc)}{RESET} {cc_color}{ctx_cc:.0f}%{RESET}"
+    )
+    if ctx_api > 0 and ctx_cc > 0 and abs(ctx_api - ctx_cc) > 3:
+        ctx_line += f"  |  {YELLOW}mismatch!{RESET}"
 
     lines.append(ctx_line)
 
@@ -916,9 +930,13 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         rl_fallback = fp.get("rl_fallback_pct", 0) or 0
         rl_overage = fp.get("rl_overage_status", "")
 
-        def _quota_bar(ratio, width=10):
-            filled = int(min(ratio, 1.0) * width)
-            return "\u2588" * filled + "\u2591" * (width - filled)
+        def _quota_bar(ratio, width=20):
+            clamped = min(ratio, 1.0)
+            filled = int(clamped * width)
+            if clamped > 0 and filled == 0:
+                filled = 1
+            empty = width - filled
+            return "\u2588" * filled + "\u2591" * empty
 
         def _quota_color(ratio):
             if ratio >= 0.8: return RED + BOLD
@@ -959,8 +977,8 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         bind_str = "5h" if "five" in (rl_bind or "") else "7d" if "seven" in (rl_bind or "") else rl_bind or "?"
 
         quota_line = (
-            f"Quota: 5h {c5}{_quota_bar(rl_5h or 0)}{RESET} {rl_5h_pct:.1f}% ({_reset_countdown(rl_5h_reset)})"
-            f"  |  7d {c7}{_quota_bar(rl_7d or 0)}{RESET} {rl_7d_pct:.1f}% ({_reset_countdown(rl_7d_reset)})"
+            f"Quota: 5h {c5}{BOLD}{_quota_bar(rl_5h or 0)}{RESET} {c5}{rl_5h_pct:.1f}%{RESET} ({_reset_countdown(rl_5h_reset)})"
+            f"  |  7d {c7}{BOLD}{_quota_bar(rl_7d or 0)}{RESET} {c7}{rl_7d_pct:.1f}%{RESET} ({_reset_countdown(rl_7d_reset)})"
             f"  |  {status_str}"
             f"  |  Bind: {CYAN}{bind_str}{RESET}"
         )
