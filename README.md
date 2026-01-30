@@ -616,7 +616,7 @@ Runs on every user prompt. Reads the behavioral signature from `fingerprint.db` 
 | `SYCOPHANT` | >50% | "Verify the claim is correct before agreeing" |
 | `THEATER` | >50% | "Stop preparing and start executing" |
 
-Escalation levels: `gentle` → `warning` → `protocol` → `halt` (based on offense count per session). Uses the `realignment` module (v2) with RLHF-inspired dynamics when available, falls back to static templates (v1).
+Escalation levels: `gentle` → `warning` → `protocol` → `halt` (based on offense count per session). Uses the `realignment` module (`~/.claude/realignment/`) with RLHF-inspired dynamics to select correction prompts based on offense history and signature type.
 
 ### `behavioral_tracker.py` — Tool Pattern Tracking
 
