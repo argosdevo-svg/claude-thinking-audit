@@ -790,14 +790,31 @@ def format_statusline_expanded(context: dict, fp: dict, extras: dict) -> str:
         empty = width - filled
         return "\u2588" * filled + "\u2591" * empty
 
+    # True context = cache_read + cache_create + input (what actually fills the 200k window)
+    cache_read = fp.get("cache_read_tokens", 0)
+    cache_create = fp.get("cache_creation_tokens", 0)
+    input_tok = fp.get("input_tokens", 0)
+    true_total = cache_read + cache_create + input_tok
+    true_pct = min((true_total / 200000) * 100, 100) if true_total > 0 else 0
+
+    true_color = GREEN if true_pct < 70 else YELLOW if true_pct < 90 else RED
     ctx_color = GREEN if ctx_api < 70 else YELLOW if ctx_api < 90 else RED
     cc_color = GREEN if ctx_cc < 70 else YELLOW if ctx_cc < 90 else RED
+
     ctx_line = (
-        f"Context: API {ctx_color}{BOLD}{_ctx_bar(ctx_api)}{RESET} {ctx_color}{ctx_api:.0f}%{RESET}"
+        f"Context: True {true_color}{BOLD}{_ctx_bar(true_pct)}{RESET} {true_color}{true_pct:.0f}%{RESET}"
         f"  |  CC {cc_color}{BOLD}{_ctx_bar(ctx_cc)}{RESET} {cc_color}{ctx_cc:.0f}%{RESET}"
     )
-    if ctx_api > 0 and ctx_cc > 0 and abs(ctx_api - ctx_cc) > 3:
+    if true_pct > 0 and ctx_cc > 0 and abs(true_pct - ctx_cc) > 5:
         ctx_line += f"  |  {YELLOW}mismatch!{RESET}"
+
+    # Remaining calls estimate
+    if true_pct > 10:
+        remaining_tokens = 200000 - true_total
+        avg_growth = cache_create + input_tok  # last call's growth
+        if avg_growth > 0:
+            calls_left = int(remaining_tokens / avg_growth)
+            ctx_line += f"  |  ~{calls_left} calls left"
 
     lines.append(ctx_line)
 
