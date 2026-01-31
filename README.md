@@ -42,7 +42,7 @@ BLOCK_NON_OPUS=1 FORCE_THINKING_BUDGET=31999 mitmdump -s mitm_itt_addon.py -s co
 | **Quantization** | Detect INT8/INT4 compressed models (faster but dumber) |
 | **Backend Hardware** | Trainium/TPU/GPU classification with confidence % |
 | **Subagent Delegation** | How many calls secretly go to Haiku (spoiler: 99%) |
-| **UI vs API Mismatch** | Claude Code shows 83% context, API shows 5% |
+| **Context Metrics (Cache‑Aware)** | True context % (cache_read + cache_create + input) vs Claude Code UI % |
 | **Rate Limit Quota** | Real-time 5h/7d utilization, reset countdown, throttle status |
 
 ### 📊 TWO DISPLAY OPTIONS
@@ -274,15 +274,21 @@ Our traffic analysis revealed massive delegation to Haiku subagents:
 
 **When you request Opus, Claude Code delegates to Haiku behind the scenes.**
 
-### Discovery #3: UI vs API Context Mismatch
+### Discovery #3: Context Metrics Mismatch (Cache‑Aware)
 
-| Metric | Claude Code UI | Actual API | Phantom Usage |
-|--------|---------------|------------|---------------|
-| Context Usage | 21% | 0% | **21% phantom** |
-| Context Usage | 83% | 5% | **78% phantom** |
-| Context Usage | 74% | 0% | **74% phantom** |
+The apparent mismatch is **not** “phantom context.” It is a **measurement mismatch**:
 
-The UI shows inflated context that doesn't match API reality.
+- **API `input_tokens`** counts only *uncached* tokens (new payload each call).
+- **Claude Code UI (CC%)** reflects *total* context (cached + uncached).
+- **True context %** = `(cache_read_tokens + cache_creation_tokens + input_tokens) / 200,000`.
+
+Example (real trace):
+
+| Metric | Claude Code UI | API `input_tokens` | **True Context %** |
+|--------|----------------|--------------------|--------------------|
+| Context Usage | 83% | 5% | **78%** |
+
+So the UI is not “inflated”; the API number is just a **partial** view. The fix is to display the **True Context %** (cache‑aware) alongside CC%.
 
 ### Discovery #4: Quantization Detection (NEW)
 
