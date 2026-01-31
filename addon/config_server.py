@@ -885,6 +885,9 @@ class ConfigHandler(BaseHTTPRequestHandler):
             try:
                 with open(CONFIG_PATH) as f:
                     cfg = json.load(f)
+                merged = dict(DEFAULT_CONFIG)
+                merged.update(cfg)
+                cfg = merged
             except (FileNotFoundError, json.JSONDecodeError):
                 cfg = dict(DEFAULT_CONFIG)
             self._send_json(cfg)
