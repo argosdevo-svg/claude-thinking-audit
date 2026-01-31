@@ -102,9 +102,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   /* ═══ TOGGLE ═══ */
   .toggle { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
-  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle input { position: absolute; inset: 0; opacity: 0; margin: 0; width: 100%; height: 100%;
+                  cursor: pointer; z-index: 2; }
   .toggle .sl { position: absolute; inset: 0; background: var(--border); border-radius: 10px;
-                cursor: pointer; transition: 0.2s; }
+                cursor: pointer; transition: 0.2s; z-index: 1; }
   .toggle .sl::before { content: ""; position: absolute; width: 18px; height: 18px;
                         left: 3px; bottom: 3px; background: var(--muted); border-radius: 50%;
                         transition: 0.2s; }
