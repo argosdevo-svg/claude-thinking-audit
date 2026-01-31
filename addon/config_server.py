@@ -7,15 +7,37 @@ Access: http://localhost:18889
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
+import importlib.util
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 CONFIG_PATH = os.path.expanduser("~/.claude/trimmer_config.json")
 DB_PATH = os.path.expanduser("~/.claude/fingerprint.db")
 STATS_PATH = os.path.expanduser("~/.claude/trimmer_stats.json")
+
+STATUSLINE_PATH = os.path.expanduser("~/.claude/statusline.py")
+_STATUSLINE_MOD = None
+_STATUSLINE_LOCK = threading.Lock()
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s or "")
+
+def _load_statusline_module():
+    global _STATUSLINE_MOD
+    if not os.path.exists(STATUSLINE_PATH):
+        return None
+    with _STATUSLINE_LOCK:
+        if _STATUSLINE_MOD is None:
+            spec = importlib.util.spec_from_file_location("statusline_live", STATUSLINE_PATH)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _STATUSLINE_MOD = mod
+    return _STATUSLINE_MOD
 
 DEFAULT_CONFIG = {
     "enabled": True,
@@ -172,6 +194,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .mon-auto { color: var(--muted); font-size: 0.75em; margin-left: 12px; }
   .mon-auto.active { color: var(--green); }
 
+  /* ═══ STATUSLINE TAB ═══ */
+  .sl-output { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px;
+               white-space: pre-wrap; font-size: 0.85em; line-height: 1.4; }
+  .sl-metrics th { text-transform: uppercase; font-size: 0.75em; letter-spacing: 1px; }
+
   /* ═══ ENFORCEMENT BADGE ═══ */
   .enforce-status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.75em;
                     letter-spacing: 1px; margin-left: 8px; }
@@ -190,6 +217,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('trimmer')">&#x1F5DC;&#xFE0F; Trimmer</div>
   <div class="tab" onclick="switchTab('enforce')">&#x1F6E1;&#xFE0F; Enforcement</div>
+  <div class="tab" onclick="switchTab('statusline')">&#x1F4CA; Statusline</div>
   <div class="tab" onclick="switchTab('monitor')">&#x1F4E1; Monitor</div>
 </div>
 
@@ -322,6 +350,51 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 </div><!-- /tab-enforce -->
 
+<div id="tab-statusline" class="tab-panel">
+
+<div class="card">
+  <div class="card-head">
+    <span class="icon">&#x1F4CA;</span> Statusline Snapshot
+    <span class="mon-auto" id="sl-auto-status">auto-refresh: off</span>
+  </div>
+  <div class="card-body">
+    <div class="mon-header">
+      <div>
+        <button class="btn" onclick="loadStatusline()">&#x21BB; Refresh</button>
+        <button class="btn btn-dim" id="sl-auto-btn" onclick="toggleStatuslineAuto()">&#x25B6; Auto</button>
+        <span class="mon-count" id="sl-updated"></span>
+      </div>
+    </div>
+    <pre class="sl-output" id="sl-output">Click Refresh or switch to this tab to load data</pre>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><span class="icon">&#x2139;&#xFE0F;</span> Metrics Explained</div>
+  <div class="card-body">
+    <div style="overflow-x:auto;">
+      <table class="mon-table sl-metrics">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Value</th>
+            <th>Explanation</th>
+          </tr>
+        </thead>
+        <tbody id="sl-metrics-body">
+          <tr><td colspan="3" style="color:var(--muted);text-align:center;padding:20px;">No data yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer;color:var(--muted);">Raw JSON</summary>
+      <pre class="sl-output" id="sl-raw"></pre>
+    </details>
+  </div>
+</div>
+
+</div><!-- /tab-statusline -->
+
 <div id="tab-monitor" class="tab-panel">
 
 <div class="card">
@@ -380,11 +453,12 @@ const SELECTS = ['thinking_budget'];
 let mcpDisabled = [];
 let mcpServers = {};
 
-const TAB_NAMES = ['trimmer','enforce','monitor'];
+const TAB_NAMES = ['trimmer','enforce','statusline','monitor'];
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', i === TAB_NAMES.indexOf(name)));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+name));
   if (name === 'monitor') loadMonitor();
+  if (name === 'statusline') loadStatusline();
 }
 
 function updateBudgetLabel() {
@@ -425,6 +499,150 @@ function load() {
     updateEnforceLive(cfg);
   });
   loadStats();
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+function fmtNum(v, digits=1) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n.toFixed(digits);
+}
+function fmtMs(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n.toFixed(1) + 'ms';
+}
+function fmtPct(v, fractional=true) {
+  if (v === null || v === undefined || v === '') return '—';
+  let n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  if (fractional && n <= 1) n = n * 100;
+  return n.toFixed(1) + '%';
+}
+
+function renderStatuslineMetrics(data) {
+  const fp = data.fp || {};
+  const ex = data.extras || {};
+  const q = data.quality || {};
+  const cache = data.cache || {};
+  const beh = data.behavior || {};
+  const sess = data.session || {};
+  const rows = [];
+
+  const section = (title) => {
+    rows.push('<tr><th colspan="3">'+esc(title)+'</th></tr>');
+  };
+  const add = (label, value, desc) => {
+    rows.push('<tr><td>'+esc(label)+'</td><td>'+esc(value)+'</td><td class="mon-age">'+esc(desc)+'</td></tr>');
+  };
+
+  section('Model & Routing');
+  add('Model requested', fp.model_requested || '—', 'Model name in API request.');
+  add('Model response', fp.model_response || '—', 'Model reported by API response.');
+  add('Routing state', fp.routing_state || '—', 'DIRECT or SUBAGENT.');
+  add('Is subagent', fp.is_subagent ? 'yes' : 'no', 'Whether this call was a subagent.');
+  add('UI model selected', fp.model_ui_selected || '—', 'Model chosen in UI (if captured).');
+  add('UI/API mismatch', fp.ui_api_mismatch ? 'YES' : 'no', 'UI-selected model differs from API.');
+
+  section('Backend & Location');
+  add('Backend', fp.classified_backend || '—', 'Hardware class inferred from ITT.');
+  add('Backend confidence', fmtPct(fp.confidence, false), 'Confidence in backend classification.');
+  add('Edge location', fp.cf_edge_location || '—', 'Cloudflare edge code.');
+
+  section('Timing');
+  add('ITT mean', fmtMs(fp.itt_mean_ms), 'Average inter-token time.');
+  add('ITT std', fmtMs(fp.itt_std_ms), 'Std dev of inter-token time.');
+  add('Tokens/sec', fmtNum(fp.tokens_per_sec, 0), 'Output speed.');
+  add('TTFT', fmtMs(fp.ttft_ms), 'Time to first token.');
+  add('Variance coef', fmtNum(fp.variance_coef, 2), 'Timing variability.');
+  add('P50 / P90 / P99', `${fmtNum(fp.itt_p50_ms,0)} / ${fmtNum(fp.itt_p90_ms,0)} / ${fmtNum(fp.itt_p99_ms,0)} ms`, 'ITT percentiles.');
+  add('Envoy upstream', fmtMs(fp.envoy_upstream_time_ms), 'Server-side latency (if available).');
+  add('Stop reason', fp.stop_reason || '—', 'Why generation stopped.');
+
+  section('Thinking');
+  add('Thinking tier', fp.thinking_budget_tier || '—', 'Budget tier label.');
+  add('Budget requested', fp.thinking_budget_requested ?? '—', 'Thinking budget tokens requested.');
+  add('Utilization', fmtPct(fp.thinking_utilization, false), 'Percent of budget used.');
+  add('Thinking tokens used', fp.thinking_tokens_used ?? '—', 'Raw thinking tokens (if captured).');
+  add('Thinking duration', fmtNum((fp.thinking_duration_ms||0)/1000,1)+'s', 'Time spent thinking.');
+  add('Text duration', fmtNum((fp.text_duration_ms||0)/1000,1)+'s', 'Time spent generating text.');
+
+  section('Cache & Context');
+  add('Cache efficiency (call)', fmtPct(fp.cache_efficiency, false), 'Cache hit rate for this call.');
+  add('Cache session avg', fmtPct(ex.cache_session_avg, false), 'Average cache hit rate this session.');
+  add('Cache read tokens', fp.cache_read_tokens ?? '—', 'Tokens served from cache.');
+  add('Cache create tokens', fp.cache_creation_tokens ?? '—', 'Tokens added to cache.');
+  add('Context API %', fmtPct(ex.context_api_pct, false), 'True context % (cache+input).');
+  add('Context CC %', fmtPct(ex.context_cc_pct, false), 'Claude Code UI % (if recorded).');
+  add('Context mismatch', ex.context_mismatch ?? '—', 'Difference between API and CC %.');
+
+  section('Rate Limits');
+  add('5h utilization', fmtPct(fp.rl_5h_utilization, true), '5h rolling utilization.');
+  add('7d utilization', fmtPct(fp.rl_7d_utilization, true), '7d rolling utilization.');
+  add('Status', fp.rl_overall_status || '—', 'allowed / warning / rate_limited.');
+  add('Binding window', fp.rl_binding_window || '—', 'Which window is binding.');
+  add('Fallback %', fmtPct(fp.rl_fallback_pct, false), 'Throughput when rate-limited.');
+
+  section('Quality');
+  add('Quality label', q.label || '—', 'Quality classification.');
+  add('Score', q.score ?? '—', 'Composite quality score.');
+  add('Timing ratio', fmtNum(q.timing_ratio,2), 'Relative timing vs baseline.');
+  add('Variance ratio', fmtNum(q.variance_ratio,2), 'Relative variance vs baseline.');
+  add('TPS ratio', fmtNum(q.tps_ratio,2), 'Relative throughput vs baseline.');
+  add('Trend', q.trend_label || q.trend || '—', 'Recent quality trend.');
+
+  section('Behavior');
+  add('Behavior signature', beh.signature || '—', 'Behavior classification.');
+  add('Verifier score', beh.combined_scores ? (beh.combined_scores.verifier ?? '—') : '—', 'Verification tendency.');
+  add('Sycophant score', beh.combined_scores ? (beh.combined_scores.sycophant ?? '—') : '—', 'Sycophancy tendency.');
+  add('Completer score', beh.combined_scores ? (beh.combined_scores.completer ?? '—') : '—', 'Completion bias.');
+  add('Trending', beh.trending || '—', 'Behavior trend.');
+
+  section('Session');
+  add('Session ID', sess.session_id || '—', 'Current session identifier.');
+  add('Samples', sess.sample_count ?? '—', 'Samples in session stats.');
+  add('Backend switches', sess.backend_switches ?? '—', 'Number of backend switches.');
+  add('Subagent calls', sess.subagent_count ?? '—', 'Subagent call count.');
+
+  const body = document.getElementById('sl-metrics-body');
+  body.innerHTML = rows.join('');
+}
+
+let slAutoInterval = null;
+function loadStatusline() {
+  fetch('/api/statusline').then(r=>r.json()).then(data => {
+    const out = document.getElementById('sl-output');
+    out.textContent = data.lines || 'No fingerprint data yet';
+    const raw = document.getElementById('sl-raw');
+    if (raw) raw.textContent = JSON.stringify(data, null, 2);
+    renderStatuslineMetrics(data);
+    const ts = document.getElementById('sl-updated');
+    if (ts) ts.textContent = data.generated_at ? ('updated ' + new Date(data.generated_at*1000).toLocaleTimeString()) : '';
+  }).catch(e => {
+    document.getElementById('sl-output').textContent = 'Error: ' + e.message;
+  });
+}
+
+function toggleStatuslineAuto() {
+  const btn = document.getElementById('sl-auto-btn');
+  const st = document.getElementById('sl-auto-status');
+  if (slAutoInterval) {
+    clearInterval(slAutoInterval);
+    slAutoInterval = null;
+    btn.textContent = '\u25B6 Auto';
+    st.textContent = 'auto-refresh: off';
+    st.className = 'mon-auto';
+  } else {
+    loadStatusline();
+    slAutoInterval = setInterval(loadStatusline, 3000);
+    btn.textContent = '\u25A0 Stop';
+    st.textContent = 'auto-refresh: 3s';
+    st.className = 'mon-auto active';
+  }
 }
 
 function loadStats() {
@@ -677,6 +895,45 @@ class ConfigHandler(BaseHTTPRequestHandler):
             except (FileNotFoundError, json.JSONDecodeError):
                 stats = {}
             self._send_json(stats)
+        elif self.path == "/api/statusline":
+            try:
+                mod = _load_statusline_module()
+                if mod is None:
+                    self._send_json({"error": "statusline.py not found"}, status=500)
+                    return
+                fp = mod.get_fingerprint_status(model_filter=None) or {}
+                extras = mod.get_extras(model_filter=None) or {}
+                quality = mod.get_quality_status() or {}
+                cache = mod.get_cache_analysis() or {}
+                behavior = mod.get_behavioral_status() or {}
+                session = mod.get_session_stats() or {}
+                subagents = mod.get_subagent_counts() or {}
+                anomalies = mod.get_anomalies() or []
+                experiment = mod.get_experiment_phase() or {}
+                bimodal = mod.get_bimodal_analysis() or {}
+                sycophancy = mod.get_sycophancy_status() or {}
+                if fp:
+                    lines = mod.format_statusline_expanded({}, fp, extras)
+                else:
+                    lines = "No fingerprint data yet."
+                payload = {
+                    "lines": _strip_ansi(lines),
+                    "fp": fp,
+                    "extras": extras,
+                    "quality": quality,
+                    "cache": cache,
+                    "behavior": behavior,
+                    "session": session,
+                    "subagents": subagents,
+                    "anomalies": anomalies,
+                    "experiment": experiment,
+                    "bimodal": bimodal,
+                    "sycophancy": sycophancy,
+                    "generated_at": time.time(),
+                }
+                self._send_json(payload)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
         elif self.path.startswith("/api/monitor"):
             try:
                 qs = parse_qs(urlparse(self.path).query)
