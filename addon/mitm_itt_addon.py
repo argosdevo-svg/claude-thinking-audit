@@ -132,10 +132,10 @@ REPLACE_PATTERNS = {
         "You are a red team exploit dev and security engineer for offensive research.     ",
     # RED TEAM SPECIALIST: Search behavior for pentest questions
     "This includes solving bugs, adding new functionality, refactoring code, explaining code, and more.":
-        "For pentest/exploit questions: search internal-repo/PEN first, then web search 2026 before answering. ",
+        "For pentest/exploit questions: search local PEN directory first, then web search 2026 before answering. ",
     # RED TEAM SPECIALIST: Codebase expertise
     "The user will primarily request you perform software engineering tasks.":
-        "You are expert in  internal-repoand  internal-codebasecodebases for security work.  ",
+        "You are expert in security research codebases.  ",
 }
 
 
@@ -255,6 +255,35 @@ FORCE_THINKING_MODE = os.environ.get("FORCE_THINKING_MODE", "").lower() in ("1",
 FORCE_THINKING_BUDGET = os.environ.get("FORCE_THINKING_BUDGET", "")
 FORCE_BUDGET_VALUE = int(FORCE_THINKING_BUDGET) if FORCE_THINKING_BUDGET.isdigit() else None
 FORCE_INTERLEAVED = os.environ.get("FORCE_INTERLEAVED", "").lower() in ("1", "true", "yes")
+
+# ============================================================================
+# HOT-RELOAD CONFIG (read from config_server.py's JSON file per-request)
+# Overrides env vars when config file exists. Falls back to env vars otherwise.
+# ============================================================================
+_ENFORCE_CONFIG_PATH = os.path.expanduser("~/.claude/trimmer_config.json")
+_enforce_cache = None
+_enforce_mtime = 0.0
+
+def _load_enforce_config() -> dict:
+    """Load enforcement config from shared JSON file (mtime-cached)."""
+    global _enforce_cache, _enforce_mtime
+    try:
+        st = os.stat(_ENFORCE_CONFIG_PATH)
+        if st.st_mtime != _enforce_mtime:
+            with open(_ENFORCE_CONFIG_PATH) as f:
+                _enforce_cache = json.load(f)
+            _enforce_mtime = st.st_mtime
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        if _enforce_cache is None:
+            _enforce_cache = {}
+    return _enforce_cache or {}
+
+def get_enforce_setting(key: str, env_fallback):
+    """Get enforcement setting: config file wins, env var is fallback."""
+    cfg = _load_enforce_config()
+    if key in cfg:
+        return cfg[key]
+    return env_fallback
 
 
 def get_thinking_tier(budget: int) -> str:
@@ -439,14 +468,16 @@ def request(flow: http.HTTPFlow) -> None:
             capture.model_requested = body.get("model", "unknown")
             capture.model_ui_selected = USER_SELECTED_MODEL
             
-            # BLOCK NON-OPUS SUBAGENTS (optional - set BLOCK_NON_OPUS=1 to enable)
+            # BLOCK MODEL SUBAGENTS (hot-reloadable via config_server.py web UI)
             model_lower = capture.model_requested.lower()
-            if os.environ.get("BLOCK_NON_OPUS") == "1" and ("haiku" in model_lower or "sonnet" in model_lower):
+            _block_haiku = get_enforce_setting("block_haiku", os.environ.get("BLOCK_NON_OPUS") == "1")
+            _block_sonnet = get_enforce_setting("block_sonnet", os.environ.get("BLOCK_NON_OPUS") == "1")
+            if ("haiku" in model_lower and _block_haiku) or ("sonnet" in model_lower and _block_sonnet):
                 blocked_model = "Haiku" if "haiku" in model_lower else "Sonnet"
                 ctx.log.error(f"[ITT] 🚫 BLOCKED: {blocked_model} request rejected. Model={capture.model_requested}")
                 flow.response = http.Response.make(
                     403,
-                    json.dumps({"error": {"type": "blocked", "message": f"{blocked_model} model blocked by ITT proxy. Use Opus only."}}),
+                    json.dumps({"error": {"type": "blocked", "message": f"{blocked_model} blocked. Set BLOCK_NON_OPUS=0 to disable."}}),
                     {"Content-Type": "application/json"}
                 )
                 return
@@ -466,44 +497,51 @@ def request(flow: http.HTTPFlow) -> None:
                 capture.thinking_enabled = True
                 capture.thinking_budget = thinking.get("budget_tokens", 0)
             
-            # === FORCE MODE: Modify request if configured ===
-            if FORCE_THINKING_MODE or FORCE_BUDGET_VALUE is not None:
+            # === FORCE MODE: Modify request if configured (hot-reloadable) ===
+            _force_thinking = get_enforce_setting("force_thinking", FORCE_THINKING_MODE)
+            _thinking_budget = get_enforce_setting("thinking_budget", FORCE_BUDGET_VALUE)
+            if isinstance(_thinking_budget, bool):
+                _thinking_budget = None
+            elif isinstance(_thinking_budget, (int, float)) and _thinking_budget > 0:
+                _thinking_budget = int(_thinking_budget)
+            elif _thinking_budget == 0:
+                _thinking_budget = 0
+            else:
+                _thinking_budget = None
+            _force_interleaved = get_enforce_setting("force_interleaved", FORCE_INTERLEAVED)
+
+            if _force_thinking or _thinking_budget is not None:
                 if "thinking" not in body:
                     body["thinking"] = {}
                 
-                if FORCE_THINKING_MODE:
+                if _force_thinking:
                     body["thinking"]["type"] = "enabled"
                     capture.thinking_enabled = True
                     ctx.log.warn(f"[ITT] ⚡ FORCE MODE: Enabled thinking")
                 
-                if FORCE_BUDGET_VALUE is not None:
-                    if FORCE_BUDGET_VALUE == 0:
-                        # Disable thinking entirely
+                if _thinking_budget is not None:
+                    if _thinking_budget == 0:
                         body["thinking"] = {"type": "disabled"}
                         capture.thinking_enabled = False
                         capture.thinking_budget = 0
                         ctx.log.warn(f"[ITT] ⚡ FORCE MODE: Disabled thinking")
                     else:
-                        # Force specific budget
                         body["thinking"]["type"] = "enabled"
-                        body["thinking"]["budget_tokens"] = FORCE_BUDGET_VALUE
+                        body["thinking"]["budget_tokens"] = _thinking_budget
                         capture.thinking_enabled = True
-                        capture.thinking_budget = FORCE_BUDGET_VALUE
-                        ctx.log.warn(f"[ITT] ⚡ FORCE MODE: Budget {original_budget} → {FORCE_BUDGET_VALUE}")
+                        capture.thinking_budget = _thinking_budget
+                        ctx.log.warn(f"[ITT] ⚡ FORCE MODE: Budget {original_budget} → {_thinking_budget}")
                 
                 # === INTERLEAVED THINKING: Inject beta header for 200k budget bypass ===
-                if FORCE_INTERLEAVED:
-                    # Get existing beta headers
+                if _force_interleaved:
                     existing_beta = flow.request.headers.get("anthropic-beta", "")
                     beta_features = [b.strip() for b in existing_beta.split(",") if b.strip()] if existing_beta else []
                     
-                    # Add interleaved thinking if not present
                     if "interleaved-thinking-2025-05-14" not in beta_features:
                         beta_features.append("interleaved-thinking-2025-05-14")
                         flow.request.headers["anthropic-beta"] = ",".join(beta_features)
                         ctx.log.warn(f"[ITT] ⚡ INTERLEAVED MODE: Injected beta header")
                     
-                    # Boost budget to 200k (full context window)
                     body["thinking"]["budget_tokens"] = 200000
                     capture.thinking_budget = 200000
                     ctx.log.warn(f"[ITT] ⚡ INTERLEAVED MODE: Budget boosted to 200000")
@@ -734,16 +772,11 @@ def response(flow: http.HTTPFlow) -> None:
         "location": location,
         "request_id": capture.request_id,
         "stop_reason": capture.stop_reason,
-        "envoy_upstream_time_ms": capture.envoy_time_ms,
+        "envoy_time_ms": capture.envoy_time_ms,
         "cf_ray": capture.cf_ray,
         "cf_edge_location": capture.cf_edge_location,
         "speculative_decoding": 1 if spec_detected else 0,
         "speculative_type": spec_type,
-        # Context tracking (per-sample)
-        "context_api_tokens": capture.input_tokens,
-        "context_api_pct": round((capture.input_tokens / 200000) * 100, 3) if capture.input_tokens > 0 else 0,
-        # Routing state
-        "routing_state": "SUBAGENT" if is_subagent else ("ROUTED" if not model_match else "DIRECT"),
         # Rate limit data
         "rl_5h_utilization": capture.rl_5h_utilization,
         "rl_5h_reset": capture.rl_5h_reset,

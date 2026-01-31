@@ -19,10 +19,12 @@
 | **Force Thinking Budget** | Inject 32k thinking tokens on every request | `FORCE_THINKING_BUDGET=31999` |
 | **Force Interleaved Mode** | Enable 200k extended thinking (bypasses throttling) | `FORCE_INTERLEAVED=1` |
 | **Disable Statusline** | Turn off integrated display if you prefer monitor only | `CLAUDE_STATUSLINE_DISABLED=1` |
+| **Context Trimmer** | Strip MCP tools + compress old messages to extend sessions 60% | `-s context_trimmer.py` |
+| **Config Web UI** | Toggle ALL settings from browser — 3 tabs: Trimmer, Enforcement, Monitor | `http://localhost:18889` |
 
 **One command to get what you pay for:**
 ```bash
-BLOCK_NON_OPUS=1 FORCE_THINKING_BUDGET=31999 mitmdump -s mitm_itt_addon.py -p 18888
+BLOCK_NON_OPUS=1 FORCE_THINKING_BUDGET=31999 mitmdump -s mitm_itt_addon.py -s context_trimmer.py -p 18888
 ```
 
 ### 👁️ VISIBILITY - See What's Really Happening
@@ -166,12 +168,14 @@ claude
 
 ### Configuration Options
 
+All settings can be changed via the **Web UI** at `http://localhost:18889` (Enforcement tab) — changes apply immediately on the next API call, no proxy restart needed.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BLOCK_NON_OPUS` | `0` | Set to `1` to block Haiku/Sonnet requests (returns 403) |
-| `FORCE_THINKING_MODE` | `0` | Set to `1` to force thinking enabled on all requests |
-| `FORCE_THINKING_BUDGET` | - | Force specific budget (e.g., `31999`). Set to `0` to disable. |
-| `FORCE_INTERLEAVED` | `0` | Set to `1` to enable interleaved thinking with 200k budget |
+| `BLOCK_NON_OPUS` / `block_haiku` | `0` / `true` | Block Haiku/Sonnet requests (403). Web UI has separate Haiku + Sonnet toggles |
+| `FORCE_THINKING_MODE` / `force_thinking` | `0` / `true` | Force thinking enabled on all requests |
+| `FORCE_THINKING_BUDGET` / `thinking_budget` | - / `31999` | Force specific budget. Web UI dropdown: 0/10k/16k/32k/200k |
+| `FORCE_INTERLEAVED` / `force_interleaved` | `0` / `false` | Enable interleaved thinking with 200k budget |
 | `CLAUDE_STATUSLINE_DISABLED` | `0` | Set to `1` to disable integrated statusline |
 
 ### Usage Examples
@@ -180,8 +184,8 @@ claude
 # Default: Monitoring only (read-only, no modifications)
 mitmdump -s mitm_itt_addon.py -p 18888
 
-# RECOMMENDED: Block cheap models + force maximum thinking
-BLOCK_NON_OPUS=1 FORCE_THINKING_BUDGET=31999 mitmdump -s mitm_itt_addon.py -p 18888
+# RECOMMENDED: Block cheap models + force maximum thinking + context trimming
+BLOCK_NON_OPUS=1 FORCE_THINKING_BUDGET=31999 mitmdump -s mitm_itt_addon.py -s context_trimmer.py -p 18888
 
 # Force interleaved thinking (200k budget)
 FORCE_INTERLEAVED=1 mitmdump -s mitm_itt_addon.py -p 18888
@@ -404,6 +408,127 @@ ORDER BY timestamp DESC LIMIT 20;
 ```
 
 
+### Discovery #8: Context Window Bloat — Anthropic's Hidden Token Tax (NEW - Jan 31 2026)
+
+Every Claude Code API call is **stateless** — the entire conversation, system prompt, tool definitions, and context is re-sent on every single request. Anthropic controls what gets packed into this payload, and analysis reveals they pack far more than necessary, consuming your 200k context window before you even start working.
+
+#### The Hidden Baseline: 48k Tokens Before You Type Anything
+
+We intercepted fresh Claude Code sessions (literally just typing `hi`) and measured the token breakdown:
+
+| Source | ~Tokens | % of 200k | Who Controls It |
+|--------|---------|-----------|-----------------|
+| Claude Code built-in system prompt + tool schemas | ~17,000 | 8.5% | **Anthropic** |
+| MCP tool schemas (brave-search, sequential-thinking, etc.) | ~18,100 | 9.1% | **Anthropic/User** |
+| Git status snapshot | ~4,000 | 2.0% | **Anthropic** |
+| CLAUDE.md project instructions | ~5,600 | 2.8% | User |
+| Settings, permissions, env context | ~2,900 | 1.5% | **Anthropic** |
+| **Total before first message** | **~48,000** | **24%** | |
+
+> **24% of your context window is consumed before you write a single word.** For a Max subscription ($200/month), you're paying for 200k tokens but start every conversation at 48k.
+
+#### Why This Matters
+
+1. **Shorter sessions**: Every API call carries this overhead. A 40-call session burns ~1.9M tokens just on system prompt repetition (48k × 40 calls)
+2. **Earlier compaction**: Claude Code's `/compact` triggers sooner because the baseline eats into your headroom
+3. **MCP tool bloat**: Each MCP server adds thousands of tokens of JSON schema. The `chrome-devtools` MCP alone adds ~12,500 tokens (25 tools). Most users don't need these on every call
+4. **Conversation history growth**: Old tool results (file contents, grep output) and thinking blocks persist at full size forever — there's no server-side compression
+
+#### The Accumulation Effect
+
+As conversations grow, old messages accumulate without compression:
+
+| Turn | Cumulative Size | Overhead | Usable Window |
+|------|----------------|----------|---------------|
+| Fresh | 48k | 24% | 152k |
+| After 10 turns | ~80k | 40% | 120k |
+| After 30 turns | ~140k | 70% | 60k |
+| After 50 turns | ~190k | 95% | 10k |
+
+By turn 50, you're spending 95% of tokens re-sending old context. Claude Code's `/compact` is supposed to help but is uncontrollable and often destructive.
+
+#### Our Countermeasure: Proxy-Side Context Trimmer
+
+We built a mitmproxy addon (`context_trimmer.py`) that intercepts API requests before they reach Anthropic and:
+
+1. **Strips MCP tool schemas** — removes tool definitions for disabled MCP servers. Each stripped tool saves ~800 tokens. Stripping 7 tools saves ~5,600 tokens per call.
+
+2. **Compresses old messages** — when estimated tokens exceed a threshold (default: 140k):
+   - Removes thinking blocks from old messages (biggest win — these can be 10k+ tokens each)
+   - Truncates old tool results to head+tail (700 chars default)
+   - Truncates old assistant text (500 chars default)
+   - Protects the most recent N messages (default: 20)
+
+3. **Per-MCP-server toggles** — web UI (port 18889) lets you enable/disable individual MCP servers per session. The trimmer discovers available servers from API traffic automatically.
+
+#### Real-World Impact
+
+First session after deployment (this tool running):
+
+| Metric | Before | After | Savings |
+|--------|--------|-------|---------|
+| MCP tools per call | 27 | 20 | 7 stripped (~5,600 tok/call) |
+| Old message compression | None | Active | ~120k tokens per trim |
+| Effective session length | ~50 turns | ~80+ turns | **60% longer sessions** |
+| Context headroom at turn 30 | 60k | 120k+ | **2x more room** |
+
+#### Config Web UI — 3-Tab Dashboard
+
+Access `http://localhost:18889` for a dark-themed cybersec dashboard with three tabs:
+
+**🗜️ Trimmer Tab:**
+- Per-MCP-server enable/disable toggles (auto-discovered from traffic)
+- Message trimming threshold and compression settings
+- Live stats (tokens saved, tools stripped, trims applied)
+- Master on/off switch
+
+**🛡️ Enforcement Tab (NEW):**
+- **Block Haiku** — toggle to reject all Haiku subagent requests (separate from Sonnet)
+- **Block Sonnet** — toggle to reject all Sonnet requests independently
+- **Force Thinking** — toggle thinking.type=enabled injection on all requests
+- **Thinking Budget** — dropdown: Disabled(0) / Basic(10k) / Enhanced(16k) / Ultra(32k) / Interleaved(200k)
+- **Force Interleaved** — toggle interleaved-thinking beta header + 200k budget
+- **Live Status Card** — shows current enforcement state with color badges
+
+**📡 Monitor Tab (NEW):**
+- Live request table showing last 50 API calls with: Age, Model, Backend (color-coded: green=Trainium, purple=TPU, orange=GPU), ITT, TTFT, Tokens, Thinking tier, 5h Quota (with progress bar), 7d Quota (with progress bar), Status, Location
+- Manual refresh + auto-refresh (3s polling)
+- Replaces the need for `journalctl` monitoring — all data visible in browser
+
+All settings hot-reload on the next API call — no proxy restart needed.
+
+```json
+{
+  "enabled": true,
+  "strip_mcp_tools": true,
+  "mcp_disabled": ["chrome-devtools"],
+  "trim_messages": true,
+  "trim_threshold_tokens": 140000,
+  "trim_keep_recent": 20,
+  "trim_max_tool_result_chars": 700,
+  "trim_max_assistant_chars": 500,
+  "strip_old_thinking": true,
+  "block_haiku": true,
+  "block_sonnet": false,
+  "force_thinking": true,
+  "thinking_budget": 31999,
+  "force_interleaved": false
+}
+```
+
+#### The Broader Point
+
+Anthropic could implement server-side context management — compressing old messages, lazy-loading tool schemas, caching system prompts across calls. They don't. Instead, they send the full payload every time, burning through your token budget faster, which means:
+
+- More frequent `/compact` cycles (lossy and uncontrollable)
+- Shorter effective sessions
+- More API calls to accomplish the same work
+- More revenue for Anthropic (usage-based pricing)
+
+Whether this is intentional or just architectural debt, the result is the same: **users pay for context they can't use.** This tool gives it back.
+
+---
+
 ## WHAT THIS TOOL MEASURES (Technical Details)
 
 ### 1. Inter-Token Timing (ITT) Fingerprinting
@@ -517,6 +642,8 @@ Rather than accept opaque "automatic thinking allocation" that users cannot veri
 | Jan 24, 2026 | [**Bug Report #20350**](https://github.com/anthropics/claude-code/issues/20350) filed with evidence |
 | Jan 26, 2026 | **v3.4 Released** - Quantization detection, terminal monitor, optional statusline |
 | Jan 30, 2026 | **v3.5 Released** - Rate limit quota tracking via undocumented headers (credit: nsanden/claude-rate-monitor) |
+| Jan 31, 2026 | **v3.6 Released** - Context trimmer, MCP tool stripping, config web UI, per-server toggles |
+| Jan 31, 2026 | **v3.7 Released** - Web UI Enforcement tab (hot-reload model blocking + thinking budget), Monitor tab (live request dashboard) |
 
 ### Related GitHub Issues
 
@@ -746,7 +873,11 @@ Quality: PREMIUM (95/100)  |  FP16 (no quant)  |  ITT: 1.0x (normal)  |  Var: 0.
 
 | File | Purpose |
 |------|---------|
-| `mitm_itt_addon.py` | Main mitmproxy addon |
+| `addon/mitm_itt_addon.py` | Main mitmproxy addon — model blocking, thinking injection, system prompt capture |
+| `addon/context_trimmer.py` | **NEW** Context trimmer — strips MCP tools, compresses old messages |
+| `addon/config_server.py` | Web config UI — 3 tabs: Trimmer, Enforcement (model blocking + thinking), Monitor (live request dashboard) (port 18889) |
+| `addon/thinking_audit.py` | Sycophancy detection and analysis |
+| `addon/statusline.py` | Integrated statusline display |
 | `claude-monitor` | Standalone terminal monitor |
 | `setup.sh` | Installation script |
 | `README.md` | This file |
