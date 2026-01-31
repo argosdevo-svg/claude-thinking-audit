@@ -50,7 +50,7 @@ BLOCK_NON_OPUS=1 FORCE_THINKING_BUDGET=31999 mitmdump -s mitm_itt_addon.py -s co
 | Option | Description | Usage |
 |--------|-------------|-------|
 | **Statusline** | Integrated into Claude Code output after each response | Enabled by default |
-| **Terminal Monitor** | Standalone live dashboard (refreshes every 2s) | `./claude-monitor` |
+| **Web UI** | Standalone live dashboard |
 
 **Statusline Output:**
 ```
@@ -59,23 +59,6 @@ ITT: 37ms ±86ms  |  Speed: 113 tokens/sec  |  TTFT: 2.8s
 Thinking: 🔴Maximum (31k budget, 8% used)  |  Cache: 100%
 Quality: 🟡STANDARD (55/100)  |  ⚠ QUANT: INT8 (57%)  |  ITT: 0.8x baseline
 Quota: 5h ████░░░░░░ 40.0% (2.3h)  |  7d █░░░░░░░░░ 10.0% (5.2d)  |  ✓ allowed  |  Bind: 5h
-```
-
-**Terminal Monitor Output:**
-```
-═══ Claude ITT Fingerprint Monitor ═══
-
-Model: claude-opus-4-5-20251101
-Backend: tpu (72%)
-ITT: 37ms ±86ms  |  TPS: 113  |  TTFT: 2.8s
-
-─── Quality Analysis ───
-ITT Ratio: 0.76x baseline  |  Variance: 1.27x
-Quantization: INT8 (57%)
-
-─── Session ───
-Samples: 14000 total, 185 last hour
-Backends: gpu:42, tpu:110, trainium:33
 ```
 
 ### 🔬 QUANTIZATION DETECTION (NEW)
@@ -480,7 +463,7 @@ First session after deployment (this tool running):
 
 #### Config Web UI — 3-Tab Dashboard
 
-Access `http://localhost:18889` for a dark-themed cybersec dashboard with three tabs:
+Access `http://localhost:18889` for a dashboard with three tabs:
 
 **🗜️ Trimmer Tab:**
 - Per-MCP-server enable/disable toggles (auto-discovered from traffic)
@@ -499,7 +482,7 @@ Access `http://localhost:18889` for a dark-themed cybersec dashboard with three 
 **📡 Monitor Tab (NEW):**
 - Live request table showing last 50 API calls with: Age, Model, Backend (color-coded: green=Trainium, purple=TPU, orange=GPU), ITT, TTFT, Tokens, Thinking tier, 5h Quota (with progress bar), 7d Quota (with progress bar), Status, Location
 - Manual refresh + auto-refresh (3s polling)
-- Replaces the need for `journalctl` monitoring — all data visible in browser
+- All data visible in browser
 
 All settings hot-reload on the next API call — no proxy restart needed.
 
