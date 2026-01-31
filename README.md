@@ -24,7 +24,7 @@
 | **Block Cheap Models** | Force Opus-only - blocks ALL Haiku/Sonnet delegation | `BLOCK_NON_OPUS=1` |
 | **Force Thinking Budget** | Inject 32k thinking tokens on every request | `FORCE_THINKING_BUDGET=31999` |
 | **Force Interleaved Mode** | Enable 200k extended thinking (bypasses throttling) | `FORCE_INTERLEAVED=1` |
-| **Disable Statusline** | Turn off integrated display if you prefer monitor only | `CLAUDE_STATUSLINE_DISABLED=1` |
+| **Statusline Toggle** | Enable/disable integrated display (Web UI toggle, env override) | `statusline_enabled` or `CLAUDE_STATUSLINE_DISABLED=1` |
 | **Context Trimmer** | Strip MCP tools + compress old messages to extend sessions 60% | `-s context_trimmer.py` |
 | **Config Web UI** | Toggle ALL settings from browser — 3 tabs: Trimmer, Enforcement, Monitor | `http://localhost:18889` |
 
@@ -165,7 +165,8 @@ All settings can be changed via the **Web UI** at `http://localhost:18889` (Enfo
 | `FORCE_THINKING_MODE` / `force_thinking` | `0` / `true` | Force thinking enabled on all requests |
 | `FORCE_THINKING_BUDGET` / `thinking_budget` | - / `31999` | Force specific budget. Web UI dropdown: 0/10k/16k/32k/200k |
 | `FORCE_INTERLEAVED` / `force_interleaved` | `0` / `false` | Enable interleaved thinking with 200k budget |
-| `CLAUDE_STATUSLINE_DISABLED` | `0` | Set to `1` to disable integrated statusline |
+| `statusline_enabled` | `true` | Web UI toggle to enable/disable statusline (env override below) |
+| `CLAUDE_STATUSLINE_DISABLED` | `0` | Set to `1` to force-disable statusline regardless of Web UI |
 
 ### Usage Examples
 

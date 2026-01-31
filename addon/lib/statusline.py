@@ -29,6 +29,32 @@ except ImportError:
     KNOWN_BACKENDS = {}
     THINKING_TIERS = {}
 
+CONFIG_PATH = os.path.expanduser("~/.claude/trimmer_config.json")
+
+def _parse_env_bool(val):
+    if val is None:
+        return None
+    v = str(val).strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return None
+
+def _is_statusline_enabled():
+    # Env var overrides config
+    env = _parse_env_bool(os.environ.get("CLAUDE_STATUSLINE_DISABLED"))
+    if env is True:
+        return False
+    if env is False:
+        return True
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            cfg = json.load(f)
+        return bool(cfg.get("statusline_enabled", True))
+    except Exception:
+        return True
+
 # ANSI colors
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -1159,8 +1185,8 @@ def select_format() -> str:
 
 
 def format_statusline(context: dict) -> str:
-    # Optional disable via environment variable
-    if os.environ.get("CLAUDE_STATUSLINE_DISABLED") == "1":
+    # Optional disable via environment variable or Web UI config
+    if not _is_statusline_enabled():
         return ""
     
     """Format the statusline based on terminal width or FINGERPRINT_DISPLAY env var."""

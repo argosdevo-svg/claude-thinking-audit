@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
     "force_thinking": True,
     "thinking_budget": 31999,
     "force_interleaved": False,
+    "statusline_enabled": True,
 }
 
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -303,6 +304,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </div>
 
 <div class="card">
+  <div class="card-head"><span class="icon">&#x1F5A5;</span> Statusline</div>
+  <div class="card-body">
+    <div class="row">
+      <label>Statusline Enabled <span class="desc">show integrated statusline in Claude Code output</span></label>
+      <div class="toggle"><input type="checkbox" id="statusline_enabled"><span class="sl"></span></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <div class="card-head"><span class="icon">&#x1F4CA;</span> Current Status</div>
   <div class="card-body" id="enforce-live" style="font-size:0.85em;color:var(--muted);">
     Loading...
@@ -362,9 +373,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <script>
 const FIELDS = ['enabled','strip_mcp_tools','trim_messages','trim_threshold_tokens',
   'trim_keep_recent','trim_max_tool_result_chars','trim_max_assistant_chars','strip_old_thinking',
-  'block_haiku','block_sonnet','force_thinking','thinking_budget','force_interleaved'];
+  'block_haiku','block_sonnet','force_thinking','thinking_budget','force_interleaved','statusline_enabled'];
 const TOGGLES = ['enabled','strip_mcp_tools','trim_messages','strip_old_thinking',
-  'block_haiku','block_sonnet','force_thinking','force_interleaved'];
+  'block_haiku','block_sonnet','force_thinking','force_interleaved','statusline_enabled'];
 const SELECTS = ['thinking_budget'];
 let mcpDisabled = [];
 let mcpServers = {};
@@ -391,10 +402,11 @@ function updateEnforceLive(cfg) {
   const budget = cfg.thinking_budget || 0;
   const budgetStr = budget >= 1000 ? (budget/1000).toFixed(0)+'k' : String(budget);
   const fi = cfg.force_interleaved ? '<span class="enforce-status on">ACTIVE</span>' : '<span class="enforce-status off">off</span>';
+  const sl = cfg.statusline_enabled ? '<span class="enforce-status off">ON</span>' : '<span class="enforce-status on">OFF</span>';
   el.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
     + '<div>Haiku: '+bh+'</div><div>Sonnet: '+bs+'</div>'
     + '<div>Thinking: '+ft+'</div><div>Budget: <span style="color:var(--cyan)">'+budgetStr+'</span></div>'
-    + '<div>Interleaved: '+fi+'</div>'
+    + '<div>Interleaved: '+fi+'</div><div>Statusline: '+sl+'</div>'
     + '</div>';
 }
 
