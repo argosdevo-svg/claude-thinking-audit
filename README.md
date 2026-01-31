@@ -879,7 +879,6 @@ Quality: PREMIUM (95/100)  |  FP16 (no quant)  |  ITT: 1.0x (normal)  |  Var: 0.
 | `docs/QUANTIZATION_DETECTION.md` | INT8/INT4 detection methodology |
 | `docs/PRECISE_INSTRUCTIONS_ANALYSIS.md` | "Precise instructions" blame-shifting analysis |
 | `docs/DISPLAY_OPTIONS.md` | Statusline vs Web UI monitor docs |
-| `ARXIV_PAPER.md` | Research paper draft |
 | `hooks/behavioral_intervention.py` | Sycophancy intervention hook (UserPromptSubmit) |
 | `hooks/behavioral_tracker.py` | Tool pattern tracking hook (PostToolUse) |
 | `hooks/force_opus_task.py` | Opus-only subagent enforcement hook (PreToolUse) |
