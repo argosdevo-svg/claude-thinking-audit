@@ -27,7 +27,7 @@
 | **Force Interleaved Mode** | Enable 200k extended thinking (bypasses throttling) | `FORCE_INTERLEAVED=1` |
 | **Statusline Toggle** | Enable/disable integrated display (Web UI toggle, env override) | `statusline_enabled` or `CLAUDE_STATUSLINE_DISABLED=1` |
 | **Context Trimmer** | Strip MCP tools + compress old messages to extend sessions 60% | `-s context_trimmer.py` |
-| **Config Web UI** | Toggle ALL settings from browser — 3 tabs: Trimmer, Enforcement, Monitor | `http://localhost:18889` |
+| **Config Web UI** | Toggle ALL settings from browser — 4 tabs: Trimmer, Enforcement, Statusline, Monitor | `http://localhost:18889` |
 
 **One command to get what you pay for:**
 ```bash
@@ -469,9 +469,9 @@ First session after deployment (this tool running):
 | Effective session length | ~50 turns | ~80+ turns | **60% longer sessions** |
 | Context headroom at turn 30 | 60k | 120k+ | **2x more room** |
 
-#### Config Web UI — 3-Tab Dashboard
+#### Config Web UI — 4-Tab Dashboard
 
-Access `http://localhost:18889` for a dashboard with three tabs:
+Access `http://localhost:18889` for a dashboard with four tabs:
 
 **🗜️ Trimmer Tab:**
 - Per-MCP-server enable/disable toggles (auto-discovered from traffic)
@@ -486,6 +486,12 @@ Access `http://localhost:18889` for a dashboard with three tabs:
 - **Thinking Budget** — dropdown: Disabled(0) / Basic(10k) / Enhanced(16k) / Ultra(32k) / Interleaved(200k)
 - **Force Interleaved** — toggle interleaved-thinking beta header + 200k budget
 - **Live Status Card** — shows current enforcement state with color badges
+
+**📊 Statusline Tab (NEW):**
+- Live statusline snapshot (formatted text)
+- Metrics explained table (human-readable)
+- **All metrics** table (raw fields, flattened)
+- Raw JSON payload for full visibility
 
 **📡 Monitor Tab (NEW):**
 - Live request table showing last 50 API calls with: Age, Model, Backend (color-coded: green=Trainium, purple=TPU, orange=GPU), ITT, TTFT, Tokens, Thinking tier, 5h Quota (with progress bar), 7d Quota (with progress bar), Status, Location
@@ -872,7 +878,7 @@ Quality: PREMIUM (95/100)  |  FP16 (no quant)  |  ITT: 1.0x (normal)  |  Var: 0.
 |------|---------|
 | `addon/mitm_itt_addon.py` | Main mitmproxy addon — model blocking, thinking injection, system prompt capture |
 | `addon/context_trimmer.py` | **NEW** Context trimmer — strips MCP tools, compresses old messages |
-| `addon/config_server.py` | Web config UI — 3 tabs: Trimmer, Enforcement (model blocking + thinking), Monitor (live request dashboard) (port 18889) |
+| `addon/config_server.py` | Web config UI — 4 tabs: Trimmer, Enforcement (model blocking + thinking), Statusline (full metrics), Monitor (live request dashboard) (port 18889) |
 | `addon/thinking_audit.py` | Sycophancy detection and analysis |
 | `addon/statusline.py` | Integrated statusline display |
 | Web UI (Monitor tab) | Live request dashboard |
