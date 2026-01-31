@@ -137,7 +137,7 @@ verification_ratio = Read/Grep BEFORE Edit/Write
 < 0.7 = Claims without verification (sycophancy)
 ```
 
-See [MEMENTO_MORI_THEORY.md](MEMENTO_MORI_THEORY.md) for academic foundations.
+See [docs/MEMENTO_MORI_THEORY.md](docs/MEMENTO_MORI_THEORY.md) for academic foundations.
 
 ---
 
@@ -329,7 +329,7 @@ Anthropic's guidance that "Claude works best with precise instructions" shifts c
 - **Jan 2026**: Users report noticeable degradation
 - **Anthropic's response**: "Use precise instructions" (i.e., do the model's reasoning work for it)
 
-See `PRECISE_INSTRUCTIONS_ANALYSIS.md` for full analysis.
+See `docs/PRECISE_INSTRUCTIONS_ANALYSIS.md` for full analysis.
 
 ---
 
@@ -886,9 +886,9 @@ Quality: PREMIUM (95/100)  |  FP16 (no quant)  |  ITT: 1.0x (normal)  |  Var: 0.
 | `claude-monitor` | Standalone terminal monitor |
 | `setup.sh` | Installation script |
 | `README.md` | This file |
-| `QUANTIZATION_DETECTION.md` | INT8/INT4 detection methodology |
-| `PRECISE_INSTRUCTIONS_ANALYSIS.md` | "Precise instructions" blame-shifting analysis |
-| `DISPLAY_OPTIONS.md` | Statusline vs terminal monitor docs |
+| `docs/QUANTIZATION_DETECTION.md` | INT8/INT4 detection methodology |
+| `docs/PRECISE_INSTRUCTIONS_ANALYSIS.md` | "Precise instructions" blame-shifting analysis |
+| `docs/DISPLAY_OPTIONS.md` | Statusline vs terminal monitor docs |
 | `ARXIV_PAPER.md` | Research paper draft |
 | `hooks/behavioral_intervention.py` | Sycophancy intervention hook (UserPromptSubmit) |
 | `hooks/behavioral_tracker.py` | Tool pattern tracking hook (PostToolUse) |
