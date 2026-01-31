@@ -393,6 +393,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="card">
+  <div class="card-head"><span class="icon">&#x1F4DD;</span> All Metrics (Raw Fields)</div>
+  <div class="card-body">
+    <div class="mon-count" id="sl-all-count"></div>
+    <div style="overflow-x:auto;">
+      <table class="mon-table sl-metrics">
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody id="sl-all-body">
+          <tr><td colspan="2" style="color:var(--muted);text-align:center;padding:20px;">No data yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 </div><!-- /tab-statusline -->
 
 <div id="tab-monitor" class="tab-panel">
@@ -523,6 +543,35 @@ function fmtPct(v, fractional=true) {
   if (fractional && n <= 1) n = n * 100;
   return n.toFixed(1) + '%';
 }
+function clip(s, max=180) {
+  const str = String(s ?? '');
+  return str.length > max ? str.slice(0, max) + '…' : str;
+}
+
+function flatten(obj, prefix, out) {
+  if (obj === null || obj === undefined) {
+    out.push([prefix || '(root)', '—']);
+    return;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) {
+      out.push([prefix || '(root)', '[]']);
+      return;
+    }
+    obj.forEach((v, i) => flatten(v, `${prefix || '(root)'}[${i}]`, out));
+    return;
+  }
+  if (typeof obj === 'object') {
+    const keys = Object.keys(obj).sort();
+    if (keys.length === 0) {
+      out.push([prefix || '(root)', '{}']);
+      return;
+    }
+    keys.forEach(k => flatten(obj[k], prefix ? `${prefix}.${k}` : k, out));
+    return;
+  }
+  out.push([prefix || '(root)', clip(obj)]);
+}
 
 function renderStatuslineMetrics(data) {
   const fp = data.fp || {};
@@ -612,6 +661,16 @@ function renderStatuslineMetrics(data) {
   body.innerHTML = rows.join('');
 }
 
+function renderAllMetrics(data) {
+  const out = [];
+  flatten(data, '', out);
+  const body = document.getElementById('sl-all-body');
+  const rows = out.map(([k,v]) => '<tr><td>'+esc(k)+'</td><td>'+esc(v)+'</td></tr>');
+  body.innerHTML = rows.join('');
+  const count = document.getElementById('sl-all-count');
+  if (count) count.textContent = out.length + ' fields';
+}
+
 let slAutoInterval = null;
 function loadStatusline() {
   fetch('/api/statusline').then(r=>r.json()).then(data => {
@@ -620,6 +679,7 @@ function loadStatusline() {
     const raw = document.getElementById('sl-raw');
     if (raw) raw.textContent = JSON.stringify(data, null, 2);
     renderStatuslineMetrics(data);
+    renderAllMetrics(data);
     const ts = document.getElementById('sl-updated');
     if (ts) ts.textContent = data.generated_at ? ('updated ' + new Date(data.generated_at*1000).toLocaleTimeString()) : '';
   }).catch(e => {
