@@ -22,57 +22,39 @@ export CLAUDE_STATUSLINE_DISABLED=1
 unset CLAUDE_STATUSLINE_DISABLED
 ```
 
-### 2. Terminal Monitor (Standalone)
+### 2. Web UI Monitor (Browser)
 
-Separate terminal window with live updates.
+Live dashboard served by the proxy on port 18889.
 
-**Location:** `/home/user/claude-thinking-audit/claude-monitor`
-
-**Usage:**
-```bash
-# Watch mode (refreshes every 2s)
-./claude-monitor
-
-# One-shot (print and exit)
-./claude-monitor --once
-```
+**Location:** `http://localhost:18889` (Monitor tab)
 
 ---
 
-## Monitor Output
+## Monitor Output (Web UI)
 
 ```
-═══ Claude ITT Fingerprint Monitor ═══
+═══ Live Request Monitor (Web UI) ═══
 
 Model: claude-opus-4-5-20251101
 Backend: tpu (72%)
 ITT: 37ms ±86ms  |  TPS: 113  |  TTFT: 2.8s
-Percentiles: p50:3ms  p90:104ms  p99:419ms
-Thinking: ON (budget:31999, used:0%)
-Tokens: 1200→350  |  Cache: 100%
-
-─── Quality Analysis ───
-ITT Ratio: 0.76x baseline  |  Variance: 1.27x
-Quantization: INT8 (57%)
-
-─── Session ───
-Samples: 14000 total, 185 last hour
-Backends: gpu:42, tpu:110, trainium:33
-
-Last: 2026-01-26T12:31:57.508479
+Thinking: ON (budget:31999)
+Tokens: 1200  |  Cache: 100%
+5h/7d Quota: 40% / 10%  |  Status: allowed
+Location: AMS
 ```
 
 ---
 
 ## Comparison
 
-| Feature | Statusline | Monitor |
+| Feature | Statusline | Web UI Monitor |
 |---------|------------|---------|
-| Display | After each Claude response | Separate terminal |
-| Update | Per API call | Every 2 seconds |
-| Disable | `CLAUDE_STATUSLINE_DISABLED=1` | Don't run it |
-| Detail level | Configurable (EXPANDED/FULL/COMPACT) | Fixed format |
-| Quantization | Shows in Quality line | Shows in Quality Analysis |
+| Display | After each Claude response | Browser dashboard |
+| Update | Per API call | Manual or 3s auto-refresh |
+| Disable | `CLAUDE_STATUSLINE_DISABLED=1` | Just close the tab |
+| Detail level | Configurable (EXPANDED/FULL/COMPACT) | Table + badges |
+| Quantization | Shows in Quality line | Shown in table (if captured) |
 
 ---
 
@@ -83,11 +65,11 @@ Last: 2026-01-26T12:31:57.508479
 - You don't want extra terminal windows
 - You want configurable detail levels
 
-**Use Monitor when:**
-- You want a dedicated display
+**Use Web UI Monitor when:**
+- You want a dedicated live dashboard
 - You're running multiple Claude sessions
 - You want to disable statusline but still see metrics
-- You're debugging timing issues
+- You want a browser-based view of recent requests
 
 **Use Both when:**
 - You want maximum visibility
@@ -106,11 +88,12 @@ export FINGERPRINT_DISPLAY=COMPACT   # Abbreviated
 export FINGERPRINT_DISPLAY=MINIMAL   # Bare minimum
 ```
 
-### Monitor Options
+### Web UI
 
-```bash
-./claude-monitor          # Watch mode (Ctrl+C to exit)
-./claude-monitor --once   # Print once and exit
+Open the Monitor tab:
+
+```
+http://localhost:18889
 ```
 
 ---
@@ -121,8 +104,7 @@ export FINGERPRINT_DISPLAY=MINIMAL   # Bare minimum
 |------|---------|
 | `~/.claude/statusline.py` | Integrated statusline for Claude Code |
 | `~/.claude/fingerprint_db.py` | Database and quality detection logic |
-| `claude-thinking-audit/claude-monitor` | Standalone terminal monitor |
-| `claude-thinking-audit/codex-monitor` | Same for OpenAI Codex |
+| Web UI (`http://localhost:18889`) | Monitor dashboard |
 
 ---
 
