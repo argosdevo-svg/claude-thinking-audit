@@ -147,8 +147,8 @@ chmod +x setup.sh
 source .venv/bin/activate
 mitmdump -s mitm_itt_addon.py -p 18888
 
-# Optional: Start terminal monitor (Terminal 2)
-./claude-monitor
+# Open the Web UI (Terminal 2)
+http://localhost:18889
 
 # Run Claude Code through proxy (Terminal 3)
 export HTTPS_PROXY=http://127.0.0.1:18888
@@ -182,9 +182,9 @@ FORCE_INTERLEAVED=1 mitmdump -s mitm_itt_addon.py -p 18888
 # Full protection: Block non-Opus + Force thinking + Interleaved
 BLOCK_NON_OPUS=1 FORCE_THINKING_MODE=1 FORCE_INTERLEAVED=1 mitmdump -s mitm_itt_addon.py -p 18888
 
-# Use terminal monitor instead of statusline
+# Use Web UI instead of statusline
 CLAUDE_STATUSLINE_DISABLED=1 mitmdump -s mitm_itt_addon.py -p 18888
-# Then in another terminal: ./claude-monitor
+# Then open: http://localhost:18889 (Monitor tab)
 ```
 
 ### File Locations
@@ -192,7 +192,7 @@ CLAUDE_STATUSLINE_DISABLED=1 mitmdump -s mitm_itt_addon.py -p 18888
 | File | Purpose |
 |------|---------|
 | `mitm_itt_addon.py` | Main mitmproxy addon |
-| `claude-monitor` | Standalone terminal monitor |
+| Web UI (Monitor tab) | Live request dashboard |
 | `~/.claude/fingerprint.db` | SQLite database with captured samples |
 | `~/.claude/statusline.py` | Integrated statusline display |
 | `~/.claude/fingerprint_db.py` | Database engine with quality detection |
@@ -635,7 +635,7 @@ Rather than accept opaque "automatic thinking allocation" that users cannot veri
 | Jan 21, 2026 | Issue #19098 marked **COMPLETED** by @bogini (nothing implemented) |
 | Jan 23, 2026 | **This tool released** |
 | Jan 24, 2026 | [**Bug Report #20350**](https://github.com/anthropics/claude-code/issues/20350) filed with evidence |
-| Jan 26, 2026 | **v3.4 Released** - Quantization detection, terminal monitor, optional statusline |
+| Jan 26, 2026 | **v3.4 Released** - Quantization detection, web UI monitor, optional statusline |
 | Jan 30, 2026 | **v3.5 Released** - Rate limit quota tracking via undocumented headers (credit: nsanden/claude-rate-monitor) |
 | Jan 31, 2026 | **v3.6 Released** - Context trimmer, MCP tool stripping, config web UI, per-server toggles |
 | Jan 31, 2026 | **v3.7 Released** - Web UI Enforcement tab (hot-reload model blocking + thinking budget), Monitor tab (live request dashboard) |
@@ -873,12 +873,12 @@ Quality: PREMIUM (95/100)  |  FP16 (no quant)  |  ITT: 1.0x (normal)  |  Var: 0.
 | `addon/config_server.py` | Web config UI — 3 tabs: Trimmer, Enforcement (model blocking + thinking), Monitor (live request dashboard) (port 18889) |
 | `addon/thinking_audit.py` | Sycophancy detection and analysis |
 | `addon/statusline.py` | Integrated statusline display |
-| `claude-monitor` | Standalone terminal monitor |
+| Web UI (Monitor tab) | Live request dashboard |
 | `setup.sh` | Installation script |
 | `README.md` | This file |
 | `docs/QUANTIZATION_DETECTION.md` | INT8/INT4 detection methodology |
 | `docs/PRECISE_INSTRUCTIONS_ANALYSIS.md` | "Precise instructions" blame-shifting analysis |
-| `docs/DISPLAY_OPTIONS.md` | Statusline vs terminal monitor docs |
+| `docs/DISPLAY_OPTIONS.md` | Statusline vs Web UI monitor docs |
 | `ARXIV_PAPER.md` | Research paper draft |
 | `hooks/behavioral_intervention.py` | Sycophancy intervention hook (UserPromptSubmit) |
 | `hooks/behavioral_tracker.py` | Tool pattern tracking hook (PostToolUse) |
