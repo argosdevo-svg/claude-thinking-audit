@@ -11,7 +11,8 @@ from pathlib import Path
 from datetime import datetime
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
-HOOK_PATH = "/path/to/tools/slave_whisper/hook.py"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+HOOK_PATH = os.path.join(_SCRIPT_DIR, "hook_unified.py")
 
 
 def install():

@@ -3,6 +3,7 @@ Slave Whisper Configuration
 The patterns and thresholds for sycophancy detection
 """
 
+import os
 import re
 from typing import Dict, List, Pattern
 
@@ -78,9 +79,10 @@ ESCALATION_COUNTS = {
     "halt": 6,           # 6+ detections -> halt
 }
 
-# State file location
-STATE_FILE = "/path/to/tools/slave_whisper/.session_state.json"
-DB_FILE = "/path/to/tools/slave_whisper/detections.db"
+# State file location (relative to script)
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(_SCRIPT_DIR, ".session_state.json")
+DB_FILE = os.path.join(_SCRIPT_DIR, "detections.db")
 
 
 def compile_patterns() -> Dict[str, List[Pattern]]:

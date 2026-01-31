@@ -18,6 +18,8 @@ from urllib.parse import urlparse, parse_qs
 CONFIG_PATH = os.path.expanduser("~/.claude/trimmer_config.json")
 DB_PATH = os.path.expanduser("~/.claude/fingerprint.db")
 STATS_PATH = os.path.expanduser("~/.claude/trimmer_stats.json")
+CONTEXT_CACHE_PATH = os.path.expanduser("~/.claude/context_cache.json")
+PATCHES_PATH = os.path.expanduser("~/.claude/context_patches.json")
 
 STATUSLINE_PATH = os.path.expanduser("~/.claude/statusline.py")
 _STATUSLINE_MOD = None
@@ -62,7 +64,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CLAUDE AUDIT // Proxy Config</title>
+<title>Proxy Config</title>
 <style>
   :root { --bg: #0a0e14; --card: #11151c; --border: #1a1f2e; --text: #c5cdd9;
           --muted: #5c6773; --accent: #39bae6; --green: #7fd962; --red: #ff3333;
@@ -208,7 +210,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <div class="logo">CLAUDE AUDIT <span style="color:#5c6773">//</span> PROXY CONFIG</div>
+  <div class="logo">PROXY CONFIG</div>
   <div class="sub">&#x2694;&#xFE0F; context trimmer &#x2022; mcp control &#x2022; model enforcement &#x2694;&#xFE0F;</div>
   <div class="sub" style="margin-top:2px;font-size:0.7em;letter-spacing:6px;color:#1a1f2e">&#x2500;&#x2500;&#x2500; &#x2500;&#x2500;&#x2500; &#x2500;&#x2500;&#x2500;</div>
 </div>
@@ -217,6 +219,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="tab active" onclick="switchTab('trimmer')">&#x1F5DC;&#xFE0F; Trimmer</div>
   <div class="tab" onclick="switchTab('enforce')">&#x1F6E1;&#xFE0F; Enforcement</div>
   <div class="tab" onclick="switchTab('statusline')">&#x1F4CA; Statusline</div>
+  <div class="tab" onclick="switchTab('context')">&#x1F4DD; Context</div>
   <div class="tab" onclick="switchTab('monitor')">&#x1F4E1; Monitor</div>
 </div>
 
@@ -414,6 +417,41 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 </div><!-- /tab-statusline -->
 
+<div id="tab-context" class="tab-panel">
+
+<div class="card">
+  <div class="card-head">
+    <span class="icon">&#x1F4DD;</span> Editable Context
+    <span class="mon-auto" id="ctx-auto-status">auto-refresh: off</span>
+  </div>
+  <div class="card-body">
+    <div class="mon-header">
+      <div>
+        <button class="btn" onclick="loadContext()">&#x21BB; Refresh</button>
+        <button class="btn btn-dim" onclick="clearPatches()">&#x1F5D1; Clear Patches</button>
+        <span class="mon-count" id="ctx-count"></span>
+        <span class="mon-count" id="ctx-patches" style="margin-left:12px;color:var(--orange)"></span>
+      </div>
+    </div>
+    <div id="ctx-messages" style="margin-top:12px;">
+      <div style="color:var(--muted);text-align:center;padding:20px;">Click Refresh or switch to this tab to load context</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><span class="icon">&#x2139;&#xFE0F;</span> How Patches Work</div>
+  <div class="card-body" style="font-size:0.85em;color:var(--muted);">
+    <p>&#x2022; Click <strong>[Edit]</strong> on any message to modify its content</p>
+    <p>&#x2022; Edits are saved as "patches" - the proxy applies them on every API request</p>
+    <p>&#x2022; Claude will see your edited version, not the original</p>
+    <p>&#x2022; Terminal still shows original text (split-brain)</p>
+    <p>&#x2022; Patches persist until cleared or hash changes</p>
+  </div>
+</div>
+
+</div><!-- /tab-context -->
+
 <div id="tab-monitor" class="tab-panel">
 
 <div class="card">
@@ -472,12 +510,13 @@ const SELECTS = ['thinking_budget'];
 let mcpDisabled = [];
 let mcpServers = {};
 
-const TAB_NAMES = ['trimmer','enforce','statusline','monitor'];
+const TAB_NAMES = ['trimmer','enforce','statusline','context','monitor'];
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', i === TAB_NAMES.indexOf(name)));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+name));
   if (name === 'monitor') loadMonitor();
   if (name === 'statusline') loadStatusline();
+  if (name === 'context') loadContext();
 }
 
 function updateBudgetLabel() {
@@ -909,6 +948,114 @@ function toggleAutoRefresh() {
     st.className = 'mon-auto active';
   }
 }
+
+// ═══ CONTEXT ═══
+let contextCache = null;
+let contextPatches = [];
+
+function loadContext() {
+  fetch('/api/context').then(r=>r.json()).then(data => {
+    contextCache = data.cache || {};
+    contextPatches = data.patches || [];
+    const messages = contextCache.messages || [];
+    const container = document.getElementById('ctx-messages');
+    const count = document.getElementById('ctx-count');
+    const patchCount = document.getElementById('ctx-patches');
+    count.textContent = messages.length + ' messages';
+    patchCount.textContent = contextPatches.length > 0 ? contextPatches.length + ' patches active' : '';
+    if (messages.length === 0) {
+      container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;">No messages yet - make an API call first</div>';
+      return;
+    }
+    let html = '';
+    messages.forEach((msg, i) => {
+      const role = msg.role || 'unknown';
+      const roleColor = role === 'user' ? 'var(--cyan)' : role === 'assistant' ? 'var(--green)' : 'var(--muted)';
+      const content = getMessageContent(msg);
+      const contentHash = simpleHash(content);
+      const patch = contextPatches.find(p => p.index === i && p.role === role);
+      const isPatchActive = patch && patch.old_hash === contentHash;
+      const patchBadge = isPatchActive ? '<span style="color:var(--orange);margin-left:8px;">[PATCHED]</span>' : '';
+      const displayContent = isPatchActive ? patch.new_content : content;
+      html += '<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:8px;overflow:hidden;">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border);">';
+      html += '<span style="color:'+roleColor+';font-weight:bold;">'+role.toUpperCase()+' ['+i+']'+patchBadge+'</span>';
+      html += '<button class="btn btn-dim" style="padding:2px 8px;font-size:0.75em;" onclick="editMessage('+i+',\''+role+'\')">[Edit]</button>';
+      html += '</div>';
+      html += '<div id="ctx-msg-'+i+'" style="padding:12px;font-size:0.85em;white-space:pre-wrap;max-height:200px;overflow-y:auto;">';
+      html += esc(displayContent.slice(0, 2000)) + (displayContent.length > 2000 ? '...[truncated]' : '');
+      html += '</div></div>';
+    });
+    container.innerHTML = html;
+  }).catch(e => {
+    document.getElementById('ctx-messages').innerHTML = '<div style="color:var(--red);">Error: '+e.message+'</div>';
+  });
+}
+
+function getMessageContent(msg) {
+  const content = msg.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(c => {
+      if (c.type === 'text') return c.text || '';
+      if (c.type === 'tool_use') return '[tool_use: '+c.name+']';
+      if (c.type === 'tool_result') return '[tool_result: '+(c.content||'').slice(0,100)+']';
+      return '['+c.type+']';
+    }).join('\n');
+  }
+  return JSON.stringify(content);
+}
+
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(16).slice(0,16);
+}
+
+function editMessage(index, role) {
+  const msg = contextCache.messages[index];
+  const content = getMessageContent(msg);
+  const contentHash = simpleHash(content);
+  const existingPatch = contextPatches.find(p => p.index === index && p.role === role && p.old_hash === contentHash);
+  const editContent = existingPatch ? existingPatch.new_content : content;
+  const container = document.getElementById('ctx-msg-'+index);
+  container.innerHTML = '<textarea id="ctx-edit-'+index+'" style="width:100%;min-height:150px;background:var(--bg);border:1px solid var(--accent);color:var(--text);padding:8px;font-family:inherit;font-size:0.9em;border-radius:4px;">'+esc(editContent)+'</textarea>'
+    + '<div style="margin-top:8px;">'
+    + '<button class="btn" style="padding:4px 12px;font-size:0.8em;" onclick="saveEdit('+index+',\''+role+'\',\''+contentHash+'\')">[Save]</button>'
+    + '<button class="btn btn-dim" style="padding:4px 12px;font-size:0.8em;margin-left:8px;" onclick="loadContext()">[Cancel]</button>'
+    + (existingPatch ? '<button class="btn btn-dim" style="padding:4px 12px;font-size:0.8em;margin-left:8px;color:var(--red);" onclick="removePatch('+index+',\''+role+'\')">Remove Patch</button>' : '')
+    + '</div>';
+}
+
+function saveEdit(index, role, oldHash) {
+  const textarea = document.getElementById('ctx-edit-'+index);
+  const newContent = textarea.value;
+  fetch('/api/context/patch', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({index, role, old_hash: oldHash, new_content: newContent})
+  }).then(r => r.json()).then(data => {
+    if (data.ok) loadContext();
+    else alert('Error: ' + (data.error || 'unknown'));
+  });
+}
+
+function removePatch(index, role) {
+  fetch('/api/context/patch/'+index+'?role='+role, {method: 'DELETE'})
+    .then(r => r.json())
+    .then(data => { if (data.ok) loadContext(); });
+}
+
+function clearPatches() {
+  if (!confirm('Clear all patches?')) return;
+  fetch('/api/context/patches', {method: 'DELETE'})
+    .then(r => r.json())
+    .then(data => { if (data.ok) loadContext(); });
+}
 </script>
 </body>
 </html>"""
@@ -996,6 +1143,19 @@ class ConfigHandler(BaseHTTPRequestHandler):
                 self._send_json(payload)
             except Exception as e:
                 self._send_json({"error": str(e)}, status=500)
+        elif self.path == "/api/context":
+            try:
+                cache = {}
+                patches = []
+                if os.path.exists(CONTEXT_CACHE_PATH):
+                    with open(CONTEXT_CACHE_PATH) as f:
+                        cache = json.load(f)
+                if os.path.exists(PATCHES_PATH):
+                    with open(PATCHES_PATH) as f:
+                        patches = json.load(f).get("patches", [])
+                self._send_json({"cache": cache, "patches": patches})
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
         elif self.path.startswith("/api/monitor"):
             try:
                 qs = parse_qs(urlparse(self.path).query)
@@ -1041,6 +1201,39 @@ class ConfigHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True})
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
+        elif self.path == "/api/context/patch":
+            try:
+                data = json.loads(self._read_body())
+                patches = []
+                if os.path.exists(PATCHES_PATH):
+                    with open(PATCHES_PATH) as f:
+                        patches = json.load(f).get("patches", [])
+                # Update or add patch
+                existing = next((p for p in patches if p.get("index") == data["index"] and p.get("role") == data["role"]), None)
+                if existing:
+                    existing["new_content"] = data["new_content"]
+                    existing["old_hash"] = data["old_hash"]
+                else:
+                    patches.append({
+                        "index": data["index"],
+                        "role": data["role"],
+                        "old_hash": data["old_hash"],
+                        "new_content": data["new_content"]
+                    })
+                os.makedirs(os.path.dirname(PATCHES_PATH), exist_ok=True)
+                with open(PATCHES_PATH, "w") as f:
+                    json.dump({"patches": patches}, f, indent=2)
+                self._send_json({"ok": True})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+        elif self.path == "/api/context/patches":
+            # Clear all patches
+            try:
+                with open(PATCHES_PATH, "w") as f:
+                    json.dump({"patches": []}, f)
+                self._send_json({"ok": True})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
         else:
             self.send_response(404)
             self.end_headers()
@@ -1048,9 +1241,41 @@ class ConfigHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+        
+        if path.startswith("/api/context/patch/"):
+            # Delete single patch by index
+            try:
+                index = int(path.split("/")[-1])
+                role = qs.get("role", [""])[0]
+                patches = []
+                if os.path.exists(PATCHES_PATH):
+                    with open(PATCHES_PATH) as f:
+                        patches = json.load(f).get("patches", [])
+                patches = [p for p in patches if not (p.get("index") == index and p.get("role") == role)]
+                with open(PATCHES_PATH, "w") as f:
+                    json.dump({"patches": patches}, f, indent=2)
+                self._send_json({"ok": True})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+        elif path == "/api/context/patches":
+            # Clear all patches
+            try:
+                with open(PATCHES_PATH, "w") as f:
+                    json.dump({"patches": []}, f)
+                self._send_json({"ok": True})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+        else:
+            self.send_response(404)
+            self.end_headers()
 
 
 def start_config_server(port=18889, daemon=True):
@@ -1062,7 +1287,7 @@ def start_config_server(port=18889, daemon=True):
 
 if __name__ == "__main__":
     port = int(os.environ.get("CONFIG_PORT", "18889"))
-    print(f"[*] Claude Audit proxy config: http://localhost:{port}")
+    print(f"[*] Proxy config: http://localhost:{port}")
     if not os.path.exists(CONFIG_PATH):
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         with open(CONFIG_PATH, "w") as f:

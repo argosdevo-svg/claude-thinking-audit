@@ -132,10 +132,10 @@ REPLACE_PATTERNS = {
         "You are a red team exploit dev and security engineer for offensive research.     ",
     # RED TEAM SPECIALIST: Search behavior for pentest questions
     "This includes solving bugs, adding new functionality, refactoring code, explaining code, and more.":
-        "For pentest/exploit questions: search local PEN directory first, then web search 2026 before answering. ",
+        "For security research questions: search documentation first, then web search for current best practices. ",
     # RED TEAM SPECIALIST: Codebase expertise
     "The user will primarily request you perform software engineering tasks.":
-        "You are expert in security research codebases.  ",
+        "You are an expert security researcher and developer.  ",
 }
 
 
@@ -237,6 +237,9 @@ class StreamingCapture:
     rl_binding_window: str = ""
     rl_fallback_pct: float = 0.0
     rl_overage_status: str = ""
+    # Thinking content capture for editable messages
+    thinking_content: str = ""
+    text_content: str = ""
 
 
 streaming_captures: Dict[int, StreamingCapture] = {}
@@ -263,6 +266,63 @@ FORCE_INTERLEAVED = os.environ.get("FORCE_INTERLEAVED", "").lower() in ("1", "tr
 _ENFORCE_CONFIG_PATH = os.path.expanduser("~/.claude/trimmer_config.json")
 _enforce_cache = None
 _enforce_mtime = 0.0
+
+# ============================================================================
+# CONTEXT CACHE & PATCHES (for editable messages feature)
+# ============================================================================
+CONTEXT_CACHE_PATH = os.path.expanduser("~/.claude/context_cache.json")
+PATCHES_PATH = os.path.expanduser("~/.claude/context_patches.json")
+import hashlib
+
+def _cache_context(messages: list, session_id: str, model: str):
+    """Cache the current messages array for web UI display."""
+    cache = {
+        "session_id": session_id,
+        "model": model,
+        "timestamp": datetime.now().isoformat(),
+        "message_count": len(messages),
+        "messages": messages[:100],  # Limit to last 100 messages
+    }
+    try:
+        with open(CONTEXT_CACHE_PATH, "w") as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        ctx.log.warn(f"[ITT] Failed to cache context: {e}")
+
+def _load_patches() -> list:
+    """Load message patches from config."""
+    try:
+        with open(PATCHES_PATH) as f:
+            return json.load(f).get("patches", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def _apply_patches(messages: list) -> tuple:
+    """Apply saved patches to messages array. Returns (patched_messages, patches_applied)."""
+    patches = _load_patches()
+    if not patches:
+        return messages, 0
+    
+    patched = []
+    applied_count = 0
+    for i, msg in enumerate(messages):
+        patch = next((p for p in patches if p.get("index") == i and p.get("role") == msg.get("role")), None)
+        if patch:
+            # Verify hash matches (content hasn't changed)
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = "".join(c.get("text", "") for c in content if c.get("type") == "text")
+            content_hash = hashlib.sha256(str(content).encode()).hexdigest()[:16]
+            
+            if patch.get("old_hash") == content_hash:
+                # Apply patch
+                msg = dict(msg)
+                msg["content"] = patch["new_content"]
+                applied_count += 1
+                ctx.log.info(f"[ITT] ✏️ Patch applied to message {i} ({patch.get('role')})")
+        patched.append(msg)
+    
+    return patched, applied_count
 
 def _load_enforce_config() -> dict:
     """Load enforcement config from shared JSON file (mtime-cached)."""
@@ -419,9 +479,17 @@ def process_sse_event(capture: StreamingCapture, event: dict, now: float):
         if delta_type == "thinking_delta":
             capture.current_phase = "thinking"
             capture.thinking_chunks.append(chunk_timing)
+            # Capture thinking text content
+            thinking_text = delta.get("thinking", "")
+            if thinking_text:
+                capture.thinking_content += thinking_text
         elif delta_type == "text_delta":
             capture.current_phase = "text"
             capture.text_chunks.append(chunk_timing)
+            # Capture assistant text content
+            text_text = delta.get("text", "")
+            if text_text:
+                capture.text_content += text_text
             
     elif event_type == "message_delta":
         usage = event.get("usage", {})
@@ -489,6 +557,24 @@ def request(flow: http.HTTPFlow) -> None:
                 if ui_family and api_family and ui_family != api_family:
                     capture.ui_api_mismatch = True
                     ctx.log.warn(f"[ITT] ⚠️ UI→API MISMATCH: Selected {USER_SELECTED_MODEL} but Claude Code requested {capture.model_requested}")
+            
+            # === CONTEXT CACHE: Save messages for web UI display ===
+            messages = body.get("messages", [])
+            if messages:
+                _cache_context(messages, session_id, capture.model_requested)
+            
+            # === PATCHES: Apply user edits to messages ===
+            messages, patches_applied = _apply_patches(messages)
+            if patches_applied > 0:
+                body["messages"] = messages
+                ctx.log.info(f"[ITT] ✏️ Applied {patches_applied} message patches")
+                modified_request = True
+                # Write patch status for statusline
+                try:
+                    with open(os.path.expanduser("~/.claude/patch_status.json"), "w") as pf:
+                        json.dump({"timestamp": time.time(), "count": patches_applied}, pf)
+                except Exception:
+                    pass
             
             thinking = body.get("thinking", {})
             original_budget = thinking.get("budget_tokens", 0) if thinking.get("type") == "enabled" else 0

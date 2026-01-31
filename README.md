@@ -27,7 +27,8 @@
 | **Force Interleaved Mode** | Enable 200k extended thinking (bypasses throttling) | `FORCE_INTERLEAVED=1` |
 | **Statusline Toggle** | Enable/disable integrated display (Web UI toggle, env override) | `statusline_enabled` or `CLAUDE_STATUSLINE_DISABLED=1` |
 | **Context Trimmer** | Strip MCP tools + compress old messages to extend sessions 60% | `-s context_trimmer.py` |
-| **Config Web UI** | Toggle ALL settings from browser — 4 tabs: Trimmer, Enforcement, Statusline, Monitor | `http://localhost:18889` |
+| **Config Web UI** | Toggle ALL settings from browser — 5 tabs: Trimmer, Enforcement, Statusline, Context, Monitor | `http://localhost:18889` |
+| **Editable Context** | Edit ANY message in your conversation — Claude sees your version, terminal shows original (split-brain) | Config Web UI → Context tab |
 
 **One command to get what you pay for:**
 ```bash
@@ -74,6 +75,48 @@ Detects when Anthropic serves compressed models to save costs:
 | **INT4-GPTQ** | <0.65x | >1.4x | Significant degradation | 🔴 Alert |
 
 **The signature:** Faster inference + higher variance = quantized model = cheaper for Anthropic, worse for you.
+
+---
+
+### ✏️ EDITABLE CONTEXT (NEW)
+
+> **The feature Anthropic won't build — because it breaks their control over what the model sees.**
+
+Claude Code has no way to edit conversation context after it's sent. Made a mistake in a prompt? Claude hallucinated something into its own context? A system reminder injected garbage? **Too bad — it's permanent.** Your only option is `/clear` and start over, losing your entire session.
+
+**We fixed that.**
+
+| Action | What Happens |
+|--------|-------------|
+| **Edit message** | Open any message in the Context tab, modify the text, save |
+| **Split-brain** | Claude sees YOUR version. Terminal shows the original. Proxy rewrites in-flight |
+| **Patch indicator** | Statusline shows `[✏️ N PATCHED]` so you always know edits are active |
+| **Patch badge** | Edited messages show `[PATCHED]` in the Web UI |
+| **Persistence** | Patches survive across API calls until you remove them |
+
+**Why this matters:**
+
+1. **Fix hallucinated context** — Claude wrote wrong code into a tool result? Edit it out instead of `/clear`
+2. **Remove poisoned system reminders** — Injected instructions you didn't ask for? Delete them
+3. **Correct your own mistakes** — Typo in a critical instruction? Fix it without restarting
+4. **Research** — Study how context changes affect model behavior in real-time
+
+**Why Anthropic won't do this:**
+
+Claude Code treats conversation history as immutable and append-only. This is by design — Anthropic controls what the model sees, not you. Editable context inverts that power dynamic: **you** decide what's in the conversation, not the platform. This is the same reason there's no "delete message" or "edit message" in the Claude Code CLI — the context is theirs, not yours.
+
+**How it works:**
+
+```
+User edits message #5 in Web UI
+  → Patch saved to ~/.claude/context_patches.json
+  → Proxy intercepts next API call
+  → Message #5 content replaced with your version
+  → Claude sees edited version, responds accordingly
+  → Terminal shows original (no visual change)
+```
+
+**Usage:** Open Config Web UI → Context tab → Click `[Edit]` on any message → Modify → `[Save]`
 
 ---
 
