@@ -278,7 +278,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </div>
 
 <div class="card">
-  <div class="card-head"><span class="icon">&#x1F9E0;</span> Thinking Control</div>
+  <div class="card-head"><span class="icon">&#x2699;</span> Thinking Control</div>
   <div class="card-body">
     <div class="row">
       <label>Force Thinking <span class="desc">inject thinking.type=enabled on all requests</span></label>
