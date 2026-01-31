@@ -22,15 +22,35 @@ export CLAUDE_STATUSLINE_DISABLED=1
 unset CLAUDE_STATUSLINE_DISABLED
 ```
 
-### 2. Web UI Monitor (Browser)
+### 2. Web UI (Browser)
 
 Live dashboard served by the proxy on port 18889.
 
-**Location:** `http://localhost:18889` (Monitor tab)
+**Location:** `http://localhost:18889` (Statusline + Monitor tabs)
 
 ---
 
-## Monitor Output (Web UI)
+## Statusline Tab (Web UI)
+
+Full statusline snapshot plus all raw metrics with explanations.
+
+```
+═══ Statusline Snapshot (Web UI) ═══
+
+Model: Opus4.5-Nov (direct)  |  Hardware: TPU (72%)
+ITT: 37ms ±86ms  |  Speed: 113 tokens/sec  |  TTFT: 2.8s
+Thinking: Maximum (31k budget, 8% used)  |  Cache: 100%
+Context: True 78%  |  CC 83%  |  mismatch!
+```
+
+The tab also includes:
+- **Metrics Explained** (human-readable table)
+- **All Metrics** (flattened raw fields)
+- **Raw JSON** (full payload)
+
+---
+
+## Monitor Tab (Web UI)
 
 ```
 ═══ Live Request Monitor (Web UI) ═══
@@ -48,13 +68,13 @@ Location: AMS
 
 ## Comparison
 
-| Feature | Statusline | Web UI Monitor |
+| Feature | Statusline | Web UI |
 |---------|------------|---------|
 | Display | After each Claude response | Browser dashboard |
 | Update | Per API call | Manual or 3s auto-refresh |
 | Disable | `CLAUDE_STATUSLINE_DISABLED=1` | Just close the tab |
-| Detail level | Configurable (EXPANDED/FULL/COMPACT) | Table + badges |
-| Quantization | Shows in Quality line | Shown in table (if captured) |
+| Detail level | Configurable (EXPANDED/FULL/COMPACT) | Statusline snapshot + full metrics tables |
+| Quantization | Shows in Quality line | Shown in tables (if captured) |
 
 ---
 
@@ -65,11 +85,11 @@ Location: AMS
 - You don't want extra terminal windows
 - You want configurable detail levels
 
-**Use Web UI Monitor when:**
+**Use Web UI when:**
 - You want a dedicated live dashboard
 - You're running multiple Claude sessions
 - You want to disable statusline but still see metrics
-- You want a browser-based view of recent requests
+- You want a browser-based view of recent requests and all metrics
 
 **Use Both when:**
 - You want maximum visibility
@@ -90,7 +110,7 @@ export FINGERPRINT_DISPLAY=MINIMAL   # Bare minimum
 
 ### Web UI
 
-Open the Monitor tab:
+Open the Statusline or Monitor tab:
 
 ```
 http://localhost:18889
@@ -104,7 +124,7 @@ http://localhost:18889
 |------|---------|
 | `~/.claude/statusline.py` | Integrated statusline for Claude Code |
 | `~/.claude/fingerprint_db.py` | Database and quality detection logic |
-| Web UI (`http://localhost:18889`) | Monitor dashboard |
+| Web UI (`http://localhost:18889`) | Statusline + Monitor dashboards |
 
 ---
 
