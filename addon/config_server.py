@@ -67,7 +67,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   :root { --bg: #0a0e14; --card: #11151c; --border: #1a1f2e; --text: #c5cdd9;
           --muted: #5c6773; --accent: #39bae6; --green: #7fd962; --red: #ff3333;
           --orange: #ff8f40; --purple: #d2a6ff; --cyan: #95e6cb; --yellow: #e7c547;
-          --glow: rgba(57,186,230,0.15); --skull: #ff3333; }
+          --glow: rgba(57,186,230,0.15); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
          background: var(--bg); color: var(--text); padding: 24px; max-width: 960px; margin: 0 auto;
@@ -77,7 +77,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ═══ HEADER ═══ */
   .header { text-align: center; margin-bottom: 20px; padding: 16px 0; border-bottom: 1px solid var(--border); }
   .header .logo { font-size: 1.5em; letter-spacing: 4px; color: var(--accent); }
-  .header .logo .skull { color: var(--skull); }
   .header .sub { color: var(--muted); font-size: 0.8em; margin-top: 4px; }
 
   /* ═══ STATS GRID ═══ */
@@ -209,7 +208,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <div class="logo"><span class="skull">&#x2620;</span> CLAUDE AUDIT <span style="color:#5c6773">//</span> PROXY CONFIG <span class="skull">&#x2620;</span></div>
+  <div class="logo">CLAUDE AUDIT <span style="color:#5c6773">//</span> PROXY CONFIG</div>
   <div class="sub">&#x2694;&#xFE0F; context trimmer &#x2022; mcp control &#x2022; model enforcement &#x2694;&#xFE0F;</div>
   <div class="sub" style="margin-top:2px;font-size:0.7em;letter-spacing:6px;color:#1a1f2e">&#x2500;&#x2500;&#x2500; &#x2500;&#x2500;&#x2500; &#x2500;&#x2500;&#x2500;</div>
 </div>
